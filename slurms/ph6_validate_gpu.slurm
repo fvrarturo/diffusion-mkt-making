@@ -38,11 +38,14 @@ source slurms/_common.sh
 N_SEEDS_SWEEP="${N_SEEDS_SWEEP:-20}"
 PREDICTION_TYPE="${PREDICTION_TYPE:-eps}"        # v4+ Phase B = "v"; v2/v3/v3.5 = "eps"
 CONDITIONING_TYPE="${CONDITIONING_TYPE:-film}"   # v5+ Phase C = "adaln_zero"; v2-v4 = "film"
+USE_EDM="${USE_EDM:-0}"                          # v6+ Phase D = "1"; v2-v5 = "0"
+EDM_SIGMA_DATA="${EDM_SIGMA_DATA:-0.5}"
 
 OPT_FLAGS=""
 [[ -n "${V1_CKPT:-}" ]] && OPT_FLAGS="$OPT_FLAGS --v1-checkpoint $V1_CKPT"
 [[ -n "${V1_LOG:-}"  ]] && OPT_FLAGS="$OPT_FLAGS --v1-log $V1_LOG"
 [[ -n "${V2_LOG:-}"  ]] && OPT_FLAGS="$OPT_FLAGS --v2-log $V2_LOG"
+[[ "$USE_EDM" == "1" ]] && OPT_FLAGS="$OPT_FLAGS --use-edm --edm-sigma-data $EDM_SIGMA_DATA"
 
 python scripts/50_validate_generator.py \
     --parts E F \

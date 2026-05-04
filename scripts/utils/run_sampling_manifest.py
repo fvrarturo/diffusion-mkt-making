@@ -56,6 +56,17 @@ def main():
                          "with. v2-v4 = 'film' (default). v5+ Phase C = 'adaln_zero'. "
                          "Mismatch causes load_state_dict to silently load nothing into "
                          "AdaLN parameters → samples will be garbage.")
+    ap.add_argument("--use-edm", action="store_true",
+                    help="Phase D / v6+: use EDM Heun 2nd-order sampler with σ-spaced "
+                         "schedule. Required for checkpoints trained with edm.enabled=true. "
+                         "When set, --prediction-type is ignored (EDM uses x_0-prediction "
+                         "via preconditioning). Default off (v2-v5 DDIM behavior).")
+    ap.add_argument("--edm-sigma-min", type=float, default=0.002)
+    ap.add_argument("--edm-sigma-max", type=float, default=80.0)
+    ap.add_argument("--edm-sigma-data", type=float, default=0.5)
+    ap.add_argument("--edm-rho", type=float, default=7.0)
+    ap.add_argument("--edm-s-churn", type=float, default=0.0,
+                    help="Karras stochasticity (Algorithm 2). 0 = deterministic Heun.")
     ap.add_argument("--start", type=int, default=0, help="start index into manifest")
     ap.add_argument("--end", type=int, default=None, help="end index (exclusive)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -78,20 +89,37 @@ def main():
     entries = manifest[args.start:end]
     print(f"[sample-batch] running {len(entries)} tasks ({args.start}..{end})", flush=True)
 
-    # Load checkpoint once.
+    # Load checkpoint once. Build the model the same way it was trained
+    # (DDPM/v-pred via build_generator OR EDM via build_edm_generator).
     print(f"[sample-batch] loading checkpoint {args.checkpoint} "
-          f"(conditioning_type={args.conditioning_type})", flush=True)
-    gen = build_generator(
-        n_features=N_FEATURES,
-        d_model=args.embed_dim * 2,
-        num_heads=8,
-        depth=8,
-        max_seq_len=args.window_length + 8,
-        embed_dim=args.embed_dim,
-        num_diffusionsteps=1000,
-        n_categories_per_axis=(3, 3, 3, 3),
-        conditioning_type=args.conditioning_type,
-    )
+          f"(conditioning_type={args.conditioning_type}, use_edm={args.use_edm})", flush=True)
+    if args.use_edm:
+        from diffmm.generator.edm import (
+            EDMSchedule as _EDMSchedule, build_edm_generator, edm_sample as _edm_sample,
+        )
+        gen = build_edm_generator(
+            n_features=N_FEATURES,
+            d_model=args.embed_dim * 2,
+            num_heads=8,
+            depth=8,
+            max_seq_len=args.window_length + 8,
+            embed_dim=args.embed_dim,
+            n_categories_per_axis=(3, 3, 3, 3),
+            conditioning_type=args.conditioning_type,
+            sigma_data=args.edm_sigma_data,
+        )
+    else:
+        gen = build_generator(
+            n_features=N_FEATURES,
+            d_model=args.embed_dim * 2,
+            num_heads=8,
+            depth=8,
+            max_seq_len=args.window_length + 8,
+            embed_dim=args.embed_dim,
+            num_diffusionsteps=1000,
+            n_categories_per_axis=(3, 3, 3, 3),
+            conditioning_type=args.conditioning_type,
+        )
     state = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
     sd = {k.removeprefix("generator."): v
           for k, v in state["state_dict"].items()
@@ -101,8 +129,19 @@ def main():
         print(f"[sample-batch] warning: missing keys {missing}", flush=True)
     gen.to(args.device).eval()
 
-    schedule = DDIMSchedule.cosine(T=1000, prediction_type=args.prediction_type)
-    print(f"[sample-batch] prediction_type={args.prediction_type}", flush=True)
+    if args.use_edm:
+        schedule = _EDMSchedule(
+            sigma_min=args.edm_sigma_min, sigma_max=args.edm_sigma_max,
+            sigma_data=args.edm_sigma_data, rho=args.edm_rho,
+        )
+        print(
+            f"[sample-batch] EDM mode: σ∈[{schedule.sigma_min},{schedule.sigma_max}] "
+            f"σ_data={schedule.sigma_data} ρ={schedule.rho} s_churn={args.edm_s_churn}",
+            flush=True,
+        )
+    else:
+        schedule = DDIMSchedule.cosine(T=1000, prediction_type=args.prediction_type)
+        print(f"[sample-batch] prediction_type={args.prediction_type}", flush=True)
     if not Path(args.norm_stats).exists():
         raise FileNotFoundError(
             f"norm stats {args.norm_stats} not found — required for decode (anchor_mid)."
@@ -120,6 +159,39 @@ def main():
         print(f"[sample-batch] stitching {n_windows} windows per (regime, seed) → "
               f"{n_windows * args.window_length}-event tapes", flush=True)
 
+    # Single sampling abstraction: dispatches to ddim_sample or edm_sample
+    # based on --use-edm. The rest of the loop (stitching + decode) is
+    # parameterization-agnostic.
+    def _sample_one(cond: torch.Tensor, null: torch.Tensor, sub_seed: int) -> torch.Tensor:
+        if args.use_edm:
+            return _edm_sample(
+                predict_x0=gen.predict_noise,
+                shape=(args.batch_size, args.window_length, N_FEATURES),
+                schedule=schedule,
+                condition=cond,
+                null_condition=null,
+                guidance_weight=args.guidance_weight,
+                n_steps=args.n_steps,
+                device=args.device,
+                seed=sub_seed,
+                s_churn=args.edm_s_churn,
+                second_order=True,
+                x0_clip=args.x0_clip,
+            )
+        return ddim_sample(
+            eps_theta=gen.predict_noise,
+            shape=(args.batch_size, args.window_length, N_FEATURES),
+            schedule=schedule,
+            condition=cond,
+            null_condition=null,
+            guidance_weight=args.guidance_weight,
+            n_steps=args.n_steps,
+            device=args.device,
+            seed=sub_seed,
+            eta=args.eta,
+            x0_clip=args.x0_clip,
+        )
+
     for i, entry in enumerate(entries):
         regime = entry["regime"]
         seed = int(entry["seed"])
@@ -129,19 +201,7 @@ def main():
         null = gen.regime_embed.null_condition(args.batch_size, args.device)
 
         if n_windows == 1:
-            samples = ddim_sample(
-                eps_theta=gen.predict_noise,
-                shape=(args.batch_size, args.window_length, N_FEATURES),
-                schedule=schedule,
-                condition=cond,
-                null_condition=null,
-                guidance_weight=args.guidance_weight,
-                n_steps=args.n_steps,
-                device=args.device,
-                seed=seed,
-                eta=args.eta,
-                x0_clip=args.x0_clip,
-            )
+            samples = _sample_one(cond, null, seed)
             paths = decode_batch_to_parquet(
                 samples, cond,
                 out_dir=out_root,
@@ -158,20 +218,7 @@ def main():
             window_batches = []
             for k in range(n_windows):
                 sub_seed = seed * 10_000 + k          # deterministic, distinct per window
-                samples_k = ddim_sample(
-                    eps_theta=gen.predict_noise,
-                    shape=(args.batch_size, args.window_length, N_FEATURES),
-                    schedule=schedule,
-                    condition=cond,
-                    null_condition=null,
-                    guidance_weight=args.guidance_weight,
-                    n_steps=args.n_steps,
-                    device=args.device,
-                    seed=sub_seed,
-                    eta=args.eta,
-                    x0_clip=args.x0_clip,
-                )
-                window_batches.append(samples_k)
+                window_batches.append(_sample_one(cond, null, sub_seed))
             stacked = torch.stack(window_batches, dim=0)  # (N, B, L, F)
             paths = decode_stitched_batch_to_parquet(
                 stacked, cond,

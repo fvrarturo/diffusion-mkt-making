@@ -65,7 +65,7 @@ class PerTimestepResult:
 
 def per_timestep_mse(
     generator,                                 # GeneratorModel
-    schedule,                                  # DDIMSchedule
+    schedule,                                  # DDIMSchedule (v2-v5) OR EDMSchedule (v6+)
     val_windows: list[np.ndarray],             # list of (L, F) numpy arrays in NORMALIZED space
     timesteps: list[int] = (10, 20, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950, 999),
     n_samples_per_t: int = 200,
@@ -74,15 +74,31 @@ def per_timestep_mse(
     seed: int = 42,
     n_axes: tuple[int, ...] = (3, 3, 3, 3),
 ) -> PerTimestepResult:
-    """For each t, sample n_samples random val windows, add the corresponding
-    diffusion noise, predict the model's regression target, return per-sample
-    MSE. The target depends on `schedule.prediction_type` — ε for the
-    classical Ho 2020 setup, or v = √ᾱ_t·ε − √(1−ᾱ_t)·x_0 for v-prediction
-    (Salimans & Ho 2022). The Min-SNR weight is also adjusted so the
-    reported per-t weight matches the trainer's effective weighting."""
+    """Per-noise-level MSE diagnostic.
+
+    For DDPM/DDIM checkpoints (v2-v5): for each integer timestep t in
+    `timesteps`, sample n_samples random val windows, add the corresponding
+    diffusion noise, predict the model's regression target (ε or v based on
+    `schedule.prediction_type`), report per-sample MSE. Min-SNR weight
+    matches the trainer's effective weighting.
+
+    For EDM checkpoints (v6+, detected via duck-type on the schedule
+    attributes): the same fixed integer "timesteps" are mapped onto a
+    σ-spaced schedule via the EDMSchedule's get_sigmas, the model predicts
+    x_0 directly (the EDM denoiser is x_0-parameterized), and the loss is
+    EDM's σ-weighted MSE on x_0 with λ(σ) = (σ²+σ_data²)/(σ·σ_data)².
+    """
     rng = np.random.default_rng(seed)
-    a_bar = schedule.alphas_cumprod.to(device)
-    pred_type = getattr(schedule, "prediction_type", "eps")
+    is_edm = hasattr(schedule, "sigma_data") and hasattr(schedule, "get_sigmas")
+    if is_edm:
+        # Build a σ schedule of the same "size" as the requested timesteps so
+        # the result tables are comparable in width across DDPM/EDM runs.
+        sigmas_full = schedule.get_sigmas(len(timesteps), device)[:-1]   # drop the trailing 0
+        a_bar = None
+        pred_type = "edm"
+    else:
+        a_bar = schedule.alphas_cumprod.to(device)
+        pred_type = getattr(schedule, "prediction_type", "eps")
 
     # Default condition vector: middle bucket on every axis (regime "base" enough)
     cond_vec = torch.tensor([0, 0, 1, 1], dtype=torch.long, device=device)
@@ -109,25 +125,43 @@ def per_timestep_mse(
             idx = rng.integers(0, stacked.shape[0], size=min(n_samples_per_t, stacked.shape[0]))
             x0 = torch.from_numpy(stacked[idx].astype(np.float32)).to(device)
             B = x0.shape[0]
-            t_tensor = torch.full((B,), int(t), dtype=torch.long, device=device)
-            a_t = a_bar[t]
-            eps_true = torch.randn_like(x0)
-            x_t = torch.sqrt(a_t) * x0 + torch.sqrt(1 - a_t) * eps_true
             cond = cond_vec.unsqueeze(0).expand(B, -1).contiguous()
-            pred = generator.predict_noise(x_t, t_tensor, cond)
+            eps_true = torch.randn_like(x0)
 
-            if pred_type == "v":
-                target = torch.sqrt(a_t) * eps_true - torch.sqrt(1 - a_t) * x0
+            if is_edm:
+                # EDM path: σ-based noising, predict x_0 directly.
+                sigma = sigmas_full[ti]
+                sigma_b = sigma.expand(B)
+                sigma_view = sigma.view(1, *([1] * (x0.dim() - 1)))
+                x_t = x0 + sigma_view * eps_true
+                pred = generator.predict_noise(x_t, sigma_b, cond)   # returns x_0_pred
+                target = x0
+                snr_t = float((schedule.sigma_data / sigma) ** 2)    # σ_data² / σ²
             else:
-                target = eps_true
+                t_tensor = torch.full((B,), int(t), dtype=torch.long, device=device)
+                a_t = a_bar[t]
+                x_t = torch.sqrt(a_t) * x0 + torch.sqrt(1 - a_t) * eps_true
+                pred = generator.predict_noise(x_t, t_tensor, cond)
+                if pred_type == "v":
+                    target = torch.sqrt(a_t) * eps_true - torch.sqrt(1 - a_t) * x0
+                else:
+                    target = eps_true
+                snr_t = float(a_t / (1 - a_t))
 
             mse = ((pred - target) ** 2).mean(dim=tuple(range(1, target.dim())))
             mse_means[ti] = float(mse.mean())
             mse_stds[ti] = float(mse.std())
             pred_stds[ti] = float(pred.std())
-            snr[ti] = float(a_t / (1 - a_t))
+            snr[ti] = snr_t
 
-    if pred_type == "v":
+    if is_edm:
+        # EDM uses λ(σ) = (σ²+σ_data²)/(σ·σ_data)²; equivalently in SNR-space
+        # with SNR = (σ_data/σ)², λ = (1 + 1/SNR) / σ_data² · σ². For the
+        # diagnostic table we just report λ(σ) directly, expressed via SNR.
+        sigmas_np = np.array([float(s) for s in sigmas_full.cpu()])
+        sigma_data = schedule.sigma_data
+        weight = (sigmas_np ** 2 + sigma_data ** 2) / (sigmas_np * sigma_data) ** 2
+    elif pred_type == "v":
         # Match DDPMTrainer.v-prediction Min-SNR formula: weight / (SNR + 1).
         weight = np.minimum(snr, min_snr_gamma) / (snr + 1.0)
     else:
@@ -352,9 +386,12 @@ def regime_embedding_cosine_similarity(
     elif off.max() < layer_collapse_threshold:
         diagnosis = (
             f"EMBEDDINGS DISTINCT (max pairwise cosine {off.max():.3f} < "
-            f"{layer_collapse_threshold}). Embedding table is fine; FiLM "
-            f"layer is collapsing the modulation downstream. Fix: train FiLM "
-            f"longer, depth-aware init, lower CFG pdrop."
+            f"{layer_collapse_threshold}). Embedding table is fine; check "
+            f"the downstream conditioning layer (FiLM γ/β or AdaLN γ/β/α "
+            f"per-block magnitudes via F.2) to see if modulation actually "
+            f"differs across regimes. If F.2 std/mean across regimes is "
+            f"small, conditioning is collapsing downstream — fix with "
+            f"longer training, larger conditioning capacity, or AdaLN-Zero."
         )
     else:
         diagnosis = (
@@ -486,17 +523,24 @@ def attention_maps(
 ) -> AttentionMapsResult:
     """Re-compute first-block first-head attention by tapping into to_q/to_k.
 
-    Done by replicating the math out-of-band rather than registering hooks on
-    softmax output (which our blocks compute via einsum, not nn.Softmax).
+    Replicates the denoiser's pre-attention forward pass out-of-band so we
+    can extract softmax(QKᵀ) at block 0 head 0. Both conditioning paths
+    supported (FiLM in v2-v4; AdaLN-Zero in v5+).
     """
-    block = generator.denoiser.blocks[0]
+    from einops import rearrange
+    denoiser = generator.denoiser
+    is_adaln = hasattr(denoiser, "adaln_blocks")
+
+    if is_adaln:
+        block = denoiser.adaln_blocks[0]
+    else:
+        block = denoiser.blocks[0]
     d = block.d_model
     h = block.num_heads
 
     maps: dict[str, np.ndarray] = {}
     titles: list[str] = []
     cond = torch.tensor([[0, 0, 1, 1]], dtype=torch.long, device=device)
-    a_bar = generator.denoiser.t_embed_table
 
     generator.eval()
     with torch.no_grad():
@@ -504,19 +548,33 @@ def attention_maps(
             for t in timesteps:
                 x = torch.from_numpy(x_np.astype(np.float32)).unsqueeze(0).to(device)
                 t_tensor = torch.tensor([int(t)], dtype=torch.long, device=device)
-
-                # Replicate denoiser.forward up to block 0's attention
-                h_in = generator.denoiser.in_proj(x)
-                L = h_in.shape[1]
-                h_in = h_in + generator.denoiser.pos_embed[:L].unsqueeze(0)
-                h_in = h_in + a_bar[t_tensor].unsqueeze(1)
                 ctx = generator.regime_embed(cond)
-                h_in = generator.denoiser.film_in(h_in, ctx)
-                h_in = generator.denoiser.layer_norm(h_in)
 
-                # Attention math (block 0, head 0)
+                if is_adaln:
+                    # AdaLN forward: in_proj + pos, then build c = t_emb + regime_proj(ctx),
+                    # then block 0's modulated pre-norm before attention.
+                    h_in = denoiser.in_proj(x)
+                    L = h_in.shape[1]
+                    h_in = h_in + denoiser.pos_embed[:L].unsqueeze(0)
+                    t_emb = denoiser.t_mlp(denoiser.t_sinusoidal_table[t_tensor])
+                    c = t_emb + denoiser.regime_proj(ctx)
+                    # Block 0's modulation MLP gives 6 chunks; we need just γ_attn, β_attn
+                    # for the pre-attention LN+modulate (the α scales the residual *after*
+                    # attention which doesn't affect the attention pattern itself).
+                    gamma1, beta1, _alpha1, _g2, _b2, _a2 = block.adaLN_modulation(c).chunk(6, dim=-1)
+                    h_in = block.norm1(h_in) * (1.0 + gamma1.unsqueeze(1)) + beta1.unsqueeze(1)
+                else:
+                    # FiLM forward: in_proj + pos + t_embed_table[t] + film_in + layer_norm,
+                    # matching TradesStyleDenoiser._forward_film.
+                    h_in = denoiser.in_proj(x)
+                    L = h_in.shape[1]
+                    h_in = h_in + denoiser.pos_embed[:L].unsqueeze(0)
+                    h_in = h_in + denoiser.t_embed_table[t_tensor].unsqueeze(1)
+                    h_in = denoiser.film_in(h_in, ctx)
+                    h_in = denoiser.layer_norm(h_in)
+
+                # Attention math (block 0, head 0) — same for both paths
                 q = block.to_q(h_in); k = block.to_k(h_in)
-                from einops import rearrange
                 q = rearrange(q, "b l (h j) -> b h l j", h=h)
                 k = rearrange(k, "b l (h j) -> b h l j", h=h)
                 q = q * (d ** -0.5)

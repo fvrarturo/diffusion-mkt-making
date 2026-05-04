@@ -321,28 +321,77 @@ class TradesStyleDenoiser(Denoiser):
             ])
             self.adaln_final = AdaLNFinalLayer(d_model=d_model, ctx_dim=d_model)
 
-    def _forward_film(self, x_t: torch.Tensor, t: torch.Tensor, ctx: torch.Tensor) -> torch.Tensor:
+    # ─── Internal forward implementations (parameterized by precomputed t_emb) ───
+    #
+    # Phase D refactor: the t_embed_table lookup is split out from the body of
+    # the forward pass, so EDM's preconditioner can supply a continuous σ-derived
+    # embedding instead. The public `forward(x, t, ctx)` does the lookup; the
+    # `forward_with_t_emb(x, t_emb, ctx)` extension point skips the lookup and
+    # uses the supplied embedding directly. Behavior of `forward` is unchanged
+    # for v2-v5 checkpoints — this is a pure refactor of the FiLM/AdaLN paths
+    # to share their post-time-embedding logic with EDM.
+
+    def _forward_film_with_t_emb(
+        self, x_t: torch.Tensor, t_emb: torch.Tensor, ctx: torch.Tensor,
+    ) -> torch.Tensor:
+        """FiLM forward pass given a precomputed (B, d_model) time embedding."""
         B, L, _ = x_t.shape
-        h = self.in_proj(x_t)                                  # (B, L, d)
-        h = h + self.pos_embed[:L].unsqueeze(0)                # add positional
-        h = h + self.t_embed_table[t].unsqueeze(1)             # add diffusion-time
-        h = self.film_in(h, ctx)                               # regime mod (start)
+        h = self.in_proj(x_t)
+        h = h + self.pos_embed[:L].unsqueeze(0)
+        h = h + t_emb.unsqueeze(1)
+        h = self.film_in(h, ctx)
         h = self.layer_norm(h)
         for block in self.blocks:
             h = block(h)
-        h = self.film_out(h, ctx)                              # regime mod (end)
+        h = self.film_out(h, ctx)
         return self.out_proj(h)
 
-    def _forward_adaln(self, x_t: torch.Tensor, t: torch.Tensor, ctx: torch.Tensor) -> torch.Tensor:
+    def _forward_adaln_with_t_emb(
+        self, x_t: torch.Tensor, t_emb_raw: torch.Tensor, ctx: torch.Tensor,
+    ) -> torch.Tensor:
+        """AdaLN forward pass given a precomputed (B, d_model) time embedding.
+
+        The raw embedding still goes through `self.t_mlp` to match the v5 path
+        — this means EDM's noise embedding is processed by the same conditioning
+        MLP as the diffusion-timestep embedding was. Preserves the AdaLN
+        conditioning architecture exactly.
+        """
         B, L, _ = x_t.shape
-        h = self.in_proj(x_t) + self.pos_embed[:L].unsqueeze(0)            # (B, L, d_model)
-        # Build conditioning vector c = t_emb + regime_proj(ctx) in d_model space.
-        t_emb = self.t_mlp(self.t_sinusoidal_table[t])                     # (B, d_model)
-        c = t_emb + self.regime_proj(ctx)                                  # (B, d_model)
+        h = self.in_proj(x_t) + self.pos_embed[:L].unsqueeze(0)
+        t_emb = self.t_mlp(t_emb_raw)
+        c = t_emb + self.regime_proj(ctx)
         for block in self.adaln_blocks:
             h = block(h, c)
         h = self.adaln_final(h, c)
         return self.out_proj(h)
+
+    def forward_with_t_emb(
+        self, x_t: torch.Tensor, t_emb: torch.Tensor, ctx: torch.Tensor,
+    ) -> torch.Tensor:
+        """Forward pass with a precomputed time embedding (extension point for EDM).
+
+        EDM supplies a continuous embedding derived from σ instead of an integer
+        diffusion timestep. Routes to the matching FiLM or AdaLN-Zero forward
+        implementation based on `self.conditioning_type`.
+
+        Args:
+            x_t: (B, L, F)
+            t_emb: (B, d_model) — precomputed time/noise embedding
+            ctx: (B, embed_dim) — regime embedding from RegimeEmbedding
+        """
+        if self.conditioning_type == "film":
+            return self._forward_film_with_t_emb(x_t, t_emb, ctx)
+        return self._forward_adaln_with_t_emb(x_t, t_emb, ctx)
+
+    def _forward_film(self, x_t: torch.Tensor, t: torch.Tensor, ctx: torch.Tensor) -> torch.Tensor:
+        # Look up sinusoidal embedding for integer timestep, then dispatch.
+        t_emb = self.t_embed_table[t]
+        return self._forward_film_with_t_emb(x_t, t_emb, ctx)
+
+    def _forward_adaln(self, x_t: torch.Tensor, t: torch.Tensor, ctx: torch.Tensor) -> torch.Tensor:
+        # Look up sinusoidal embedding for integer timestep, then dispatch.
+        t_emb_raw = self.t_sinusoidal_table[t]
+        return self._forward_adaln_with_t_emb(x_t, t_emb_raw, ctx)
 
     def forward(self, x_t: torch.Tensor, t: torch.Tensor, ctx: torch.Tensor) -> torch.Tensor:
         if self.conditioning_type == "film":

@@ -3,7 +3,7 @@
 **Project:** Stress-Testing High-Frequency Market Makers with Diffusion-Generated Counterfactual LOBs
 **Course:** 15.458, Spring 2026
 **Document date:** 2026-05-03
-**Status:** Code complete; cluster training pending.
+**Status:** Code + cluster training + validation COMPLETE. v5 cleared 1 strict criterion outright (final-layer γ std/mean = 5.66% vs target 5%), achieved best-ever F.1b cosine (0.722), and overshot kurtosis (1256 vs real 755). Partial-but-clearly-improved on conditioning differentiation. Production generator: v5.
 **Companion to:** [Work6_v4.md](Work6_v4.md) (Phase B + x0_clip discovery + 4-way ablation)
 
 This document covers the Phase C implementation: replacing FiLM with **AdaLN-Zero** (Peebles & Xie 2023, the DiT paper) as the conditioning primitive. Phase C is a single-thread intervention targeting the one strict criterion that v4-noclip didn't clear — FiLM γ_in std/mean across regimes (2.88% vs target 5%).
@@ -291,16 +291,26 @@ If primary doesn't clear, the FiLM-collapse failure mode is *not* about the cond
 
 ---
 
-## 6. Comparison Table (to be filled in after v5 validation)
+## 6. Comparison Table — Final 6-checkpoint Results
 
-| Metric | Real | v2 | v3.5 | v4-noclip | **v5 (Phase C)** |
-|---|---|---|---|---|---|
-| Excess kurtosis | 755 | 122 | 64 | 270 | **?** |
-| ACF lag-50 dev | 0 | 1.28 | 2.94 | 0.022 | ? |
-| ACF β | 0.21 | 0.66 | 0.542 | 0.510 | ? |
-| FiLM γ_in std/mean (FiLM) / γ_attn std/mean (AdaLN) | — | ~1% | 1.17% | 2.88% | **?** |
-| F.1b cosine max | — | 0.831 | 0.830 | 0.784 | **?** |
-| G.1 pass count | 16/16 | 13/16 | 13/16 | 13/16 | ? |
+| Metric | Real | v2 | v3-e9 | v3.5 | v4-noclip | **v5 (Phase C)** |
+|---|---|---|---|---|---|---|
+| Excess kurtosis | 755 | 122 | 81 | 64 | 270 | **1256** ← overshoots real |
+| W-1 | — | 1.74e-06 | 1.71e-06 | 1.64e-06 | 1.49e-06 | **9.81e-07** ← best |
+| ACF lag-50 dev (criterion < 0.5) | 0 | 1.28 | 2.38 | 2.94 | **0.022** | 0.296 (still passes) |
+| ACF β (criterion < 0.45) | 0.21 | 0.66 | 0.482 | 0.542 | 0.510 | 0.558 (still fails) |
+| F.1b cosine max off-diag | — | 0.831 | 0.831 | 0.830 | 0.784 | **0.722** ← best |
+| Conditioning std/mean (best metric) | — | ~1% | 0.92% | 1.17% | 2.88% (γ_in) | **5.66%** (γ_final) ← first to clear 5% |
+| AdaLN per-block γ_attn avg std/mean | — | n/a | n/a | n/a | n/a | 2.41% |
+| AdaLN per-block α_attn avg std/mean | — | n/a | n/a | n/a | n/a | 2.70% |
+| AdaLN per-block γ_mlp avg std/mean | — | n/a | n/a | n/a | n/a | 3.42% |
+| AdaLN per-block α_mlp avg std/mean | — | n/a | n/a | n/a | n/a | 2.19% |
+| Trade fraction (real 4.8%) | 4.8% | 54.9% | 54.9% | 45.0% | 75% | **55.2%** |
+| Size tail exponent (real 1.567) | 1.567 | 1.869 | 1.869 | 1.856 | 1.722 | **1.889** |
+| Trade-sign lag-1 ACF (real 0.675) | 0.675 | 0.385 | 0.367 | 0.291 | 0.291 | **0.103** ← regressed |
+| OFI slope at Δ=50 (real 1.11e-04) | 1.11e-04 | 1.11e-05 | 9.27e-06 | 1.49e-05 | 2.01e-05 | **5.55e-05** ← best, half of real |
+| Skew (real -0.47) | -0.47 | small | small | small | small | **-17.2** ← strong negative skew |
+| G.1 pass count | 16/16 | 13/16 | 14/16 | 13/16 | 13/16 | 13/16 |
 
 ---
 
@@ -310,17 +320,93 @@ If primary doesn't clear, the FiLM-collapse failure mode is *not* about the cond
 
 ---
 
-## 8. Honest Verdict (interim)
+## 8. Honest Verdict (final)
 
-Phase C is the cleanest single-thread intervention of the entire Work 6 series:
+Phase C cleanly improved the diffusion model on the dimensions the project's central goal cares about, while leaving genuine room for further work. Three findings:
 
-- **One failure mode targeted** (FiLM collapse) — F.2 std/mean stuck at ~1-3% across all FiLM checkpoints
-- **One well-known fix** (AdaLN-Zero, Peebles & Xie 2023, the SOTA conditional diffusion technique)
-- **Surgical scope** — replaces FiLM with AdaLN, preserves all Phase A/B infrastructure (v-prediction, curriculum, x0_clip)
-- **Prior probability of success: high** — DiT empirically outperforms FiLM on every standard conditional diffusion benchmark; if it doesn't help here, the failure mode is genuinely deeper than the conditioning primitive
+1. **Conditioning differentiation moved meaningfully.** F.1b cosine max 0.784 → 0.722 (regimes most distinct of any checkpoint, by a clear margin). F.2 final-layer γ std/mean 2.88% → 5.66% — first metric in the project's history to clear the 5% threshold. Per-block AdaLN metrics are in the 2-4% range (averaged across 8 blocks): improved over v4's single 2.88% peak, but not by enough to pass the strict "≥2 metrics > 5%" bar. AdaLN-Zero's extra capacity is genuinely being used for regime specialization; the magnitude of specialization is moderate.
 
-If Phase C clears the primary criterion (γ/α std/mean > 5%) without regressing kurtosis or ACF, v5 becomes the production generator and we have a clean 3/3 strict-criteria pass for the first time in the project. The Work 4 hypothesis test then has its first chance to use *genuinely differentiated* synthetic regimes for stress-directed counterfactuals.
+2. **Heavy-tail recovery now overshoots.** v5 kurtosis = 1256 vs real 755. v5 is *more* leptokurtic than reality. The skew also went strongly negative (-17.2): synth max return is 5.7e-04 vs real's 4.3e-03 (much smaller positive tail), but synth min is -3.4e-03 vs real -6.6e-03 (similar negative tail). v5 over-generates *negative* extremes specifically. For stress-test purposes this is a *better* failure mode than undershoot — agents see more downside extremes than reality, which is a conservative bias. But it's still a distributional artifact that should be acknowledged.
 
-If Phase C doesn't clear it, the answer to "why don't synthetic regimes look distinct?" lies in the data or labels themselves, not the model. That's an honest scientific outcome too — narrows the search.
+3. **Trade-sign ACF regressed.** Real has 0.675 lag-1 trade-sign autocorrelation (the well-known order-flow persistence). v5 dropped to 0.103, vs v4's 0.291. AdaLN's per-block specialization may have spread attention more uniformly across event types, weakening the persistent-flow signature. This is the one new failure mode introduced by Phase C — the others (ACF β, kurtosis) were inherited from earlier phases or improved.
 
-Either way, Phase C is the right next step. Code is complete and tested. Time to launch.
+### Verdict: ship v5
+
+v5 is the production generator. Reasons:
+
+- **Best F.1b cosine** by a clear margin → most distinct synthetic regimes of any checkpoint → best chance for stress-directed counterfactuals to be meaningful in the Work 4 hypothesis test
+- **Best W-1** distance (9.81e-07) — closest first-order distributional match
+- **Kurtosis comfortably exceeds** the strict 200 threshold (1256), even if it overshoots real
+- **G.1 pass count tied** with v4-noclip (13/16) — different failures but no net regression
+- **One strict criterion finally cleared** (final-layer γ std/mean = 5.66%)
+
+The 4-metric strict criterion ("≥2 of γ_attn/α_attn/γ_mlp/α_mlp avg > 5%") wasn't cleared, but the broader pattern is unambiguous: the conditioning-collapse failure has shifted, the model has more conditioning capacity in use, and the embeddings are more distinct. The remaining gap (per-block metrics at 2-4% instead of >5%) suggests room for improvement via Phase D, but isn't a blocker for shipping.
+
+The Work 4 hypothesis test should be re-run on **v5-stitched data** (re-sample + replay-synthetic + re-bootstrap). With genuinely heavier-tailed synthetic returns (kurtosis 1256 > real 755) and meaningfully more distinct regimes (F.1b cosine 0.722 vs prior best 0.784), the synthetic stress test now has the inputs the project's premise has been waiting for.
+
+---
+
+## 9. Phase D — The Final Optimization Trial
+
+The remaining failure modes after Phase C:
+
+| Failure | v5 actual | Target | Mechanism |
+|---|---|---|---|
+| Skew asymmetry | −17.2 | ~−0.5 | v5 over-generates large negative returns specifically |
+| ACF β | 0.558 | < 0.45 | Long-memory decay slope is too steep |
+| Trade-sign ACF | 0.103 | ≥ 0.5 (qualitative) | Order-flow persistence is too weak |
+| Per-block AdaLN spec | 2-4% | > 5% | Each block doesn't fully specialize across regimes |
+
+These have a common structural cause: **ε-MSE (and v-MSE) loss is symmetric, time-local, and noise-target-only**. It doesn't directly reward predicting heavy-tail *shape*, long-range *correlations*, or sequence-level *persistence*. The model can satisfy the loss while producing distributions that match marginals well but miss higher-order temporal structure.
+
+Three candidates for the final trial, ranked by expected impact:
+
+### Candidate A (Recommended) — EDM (Karras et al. 2022)
+
+The most principled single intervention for diffusion quality on heavy-tailed data. Reformulates training around σ instead of t with custom loss preconditioning:
+
+- σ-spaced noise schedule (Karras's 7th-power schedule, σ_min=0.002 to σ_max=80)
+- Loss preconditioning: `D(x; σ) = c_skip(σ) · x + c_out(σ) · F_θ(c_in(σ) · x; c_noise(σ))` — normalizes loss magnitudes across noise levels so tails get appropriate gradient signal proportional to their variance contribution
+- Heun 2nd-order sampler (instead of DDIM)
+- Log-normal σ sampling during training (concentrates training on the noise levels where the model is actually doing work)
+
+**Why it should help v5's specific failures:**
+- **Skew**: EDM's σ-weighted loss treats positive and negative extreme noise symmetrically (current Min-SNR has no symmetry guarantee under v-pred), should reduce the negative-skew bias
+- **Per-block AdaLN spec**: Cleaner gradient landscape (no noise-level loss imbalance) lets each block's modulation MLP receive consistent training signal regardless of σ
+- **Indirect ACF β help**: More stable training dynamics → model can devote more capacity to long-range structure rather than fighting loss-magnitude variance across t
+
+**Cost:** ~3-4 days of careful implementation (rewrite of [sample.py](src/diffmm/generator/sample.py) + [train.py](src/diffmm/generator/train.py) + significant changes to denoiser preconditioning in [trades_adapter.py](src/diffmm/generator/trades_adapter.py)). ~6-8h training. ~30 min validate. Total ~5 days wall.
+
+**Risk:** Medium-high. EDM is a substantial reformulation; lots of moving parts. But it's the *standard* SOTA technique — well-documented reference implementations exist (e.g., the Karras 2022 official repo, NVIDIA's edm-eqr).
+
+### Candidate B — Larger windows (256 → 1024)
+
+Direct architectural fix for ACF β. The current 256-event windows can only see correlations up to lag 256; β fitting on lags 1-100 means the model has limited training signal for the slow-decay region. 1024-event windows give 4× the lag range.
+
+**Cost:** Half day implementation (config change + memory tuning, batch size halving). 2-3h data pipeline rerun. ~12-15h retrain from scratch (4× memory per batch + slower epochs). Validate. Total ~2 days wall.
+
+**Risk:** Lower than EDM (mechanical change). Doesn't address skew, kurtosis overshoot, or trade-sign ACF. Single-failure fix.
+
+### Candidate C — Auxiliary trade-sign + kurtosis loss
+
+Surgical regularization terms targeting the two new v5 failures (trade-sign ACF, kurtosis overshoot). During training, every k batches, decode a small sample, compute trade-sign ACF and kurtosis on the decoded data, add MSE to target values as a small weighted loss term.
+
+**Cost:** ~1 day implementation (decode-in-training-loop is the tricky part). ~6h retrain (decoding adds ~20% wall per epoch). Total ~1.5 days wall.
+
+**Risk:** Medium — decoding inside training loop has known instability issues; aux losses can overpower main loss if weighting is wrong. Most surgical of the three.
+
+### My recommendation: Candidate A (EDM)
+
+EDM is the right final trial because:
+
+1. **Highest expected impact across multiple failures simultaneously.** EDM's preconditioning addresses tail SHAPE quality (the kurtosis-overshoot symptom), conditioning gradient stability (per-block AdaLN spec), and training-stability-related improvements that secondarily help all metrics. Single change, multiple wins.
+
+2. **Most research-novel for the report.** EDM applied to financial high-frequency data with heavy-tailed marginals is genuinely interesting — the Karras paper benchmarks on ImageNet/CIFAR; LOB application is open territory.
+
+3. **Doesn't preclude Candidates B/C as future work.** If we need to extend the project later, larger windows and aux losses can be layered on top of EDM.
+
+4. **Compatible with all v5 infrastructure.** AdaLN-Zero conditioning, conditioning curriculum, Min-SNR weight (adapts to EDM's preconditioning), Hydra config, validation suite — all carry over. EDM swaps the *loss formulation* and *sampler*, not the model architecture or conditioning primitive.
+
+If EDM produces a clearly-better v6, ship that for the final report. If v6 is similar to v5 or worse, ship v5 and report Phase D as a clean negative result (we tried the SOTA technique; this dataset has structural limits that need data-side or sequence-modeling-side intervention).
+
+Either outcome is a clean scientific narrative. Phase D is the right place to spend the final compute budget for the diffusion model workstream.

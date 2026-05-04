@@ -110,31 +110,73 @@ def main(cfg: DictConfig) -> None:
 
     log.info("train windows: %d   val windows: %d", len(train_ds), len(val_ds))
 
-    gen = build_generator(
-        n_features=N_FEATURES,
-        d_model=cfg.generator.model.embed_dim * 2,
-        num_heads=8,
-        depth=8,
-        max_seq_len=cfg.data.window_length + 8,
-        embed_dim=cfg.generator.model.embed_dim,
-        num_diffusionsteps=cfg.generator.schedule.T,
-        n_categories_per_axis=tuple(cfg.generator.model.n_categories_per_axis),
-        conditioning_type=cfg.generator.model.get("conditioning_type", "film"),
-    )
-    log.info("conditioning_type=%s", cfg.generator.model.get("conditioning_type", "film"))
-    schedule = _build_schedule(cfg)
+    edm_cfg = cfg.generator.get("edm", None)
+    use_edm = bool(edm_cfg is not None and edm_cfg.get("enabled", False))
+    conditioning_type = cfg.generator.model.get("conditioning_type", "film")
+    log.info("conditioning_type=%s  edm_enabled=%s", conditioning_type, use_edm)
 
-    pl_module = DDPMTrainer(
-        generator=gen,
-        schedule=schedule,
-        learning_rate=cfg.generator.training.learning_rate,
-        weight_decay=cfg.generator.training.weight_decay,
-        cfg_dropout=cfg.generator.training.cfg_dropout,
-        freeze_backbone=cfg.generator.training.freeze_backbone,
-        min_snr_gamma=cfg.generator.training.get("min_snr_gamma", None),
-        prediction_type=cfg.generator.schedule.get("prediction_type", "eps"),
-        cfg_dropout_curriculum=_build_curriculum(cfg),
-    )
+    if use_edm:
+        # Phase D path — EDM training. The DDIM schedule above is ignored.
+        from diffmm.generator.edm import (
+            EDMSchedule, EDMTrainer, build_edm_generator,
+        )
+        edm_schedule = EDMSchedule(
+            sigma_min=float(edm_cfg.get("sigma_min", 0.002)),
+            sigma_max=float(edm_cfg.get("sigma_max", 80.0)),
+            sigma_data=float(edm_cfg.get("sigma_data", 0.5)),
+            rho=float(edm_cfg.get("rho", 7.0)),
+            P_mean=float(edm_cfg.get("P_mean", -1.2)),
+            P_std=float(edm_cfg.get("P_std", 1.2)),
+        )
+        log.info(
+            "EDM schedule: σ_min=%.4f σ_max=%.1f σ_data=%.3f ρ=%.1f P_mean=%.2f P_std=%.2f",
+            edm_schedule.sigma_min, edm_schedule.sigma_max, edm_schedule.sigma_data,
+            edm_schedule.rho, edm_schedule.P_mean, edm_schedule.P_std,
+        )
+        gen = build_edm_generator(
+            n_features=N_FEATURES,
+            d_model=cfg.generator.model.embed_dim * 2,
+            num_heads=8,
+            depth=8,
+            max_seq_len=cfg.data.window_length + 8,
+            embed_dim=cfg.generator.model.embed_dim,
+            n_categories_per_axis=tuple(cfg.generator.model.n_categories_per_axis),
+            conditioning_type=conditioning_type,
+            sigma_data=edm_schedule.sigma_data,
+        )
+        pl_module = EDMTrainer(
+            generator=gen,
+            schedule=edm_schedule,
+            learning_rate=cfg.generator.training.learning_rate,
+            weight_decay=cfg.generator.training.weight_decay,
+            cfg_dropout=cfg.generator.training.cfg_dropout,
+            cfg_dropout_curriculum=_build_curriculum(cfg),
+        )
+    else:
+        # DDPM/v-pred path (v2-v5).
+        gen = build_generator(
+            n_features=N_FEATURES,
+            d_model=cfg.generator.model.embed_dim * 2,
+            num_heads=8,
+            depth=8,
+            max_seq_len=cfg.data.window_length + 8,
+            embed_dim=cfg.generator.model.embed_dim,
+            num_diffusionsteps=cfg.generator.schedule.T,
+            n_categories_per_axis=tuple(cfg.generator.model.n_categories_per_axis),
+            conditioning_type=conditioning_type,
+        )
+        schedule = _build_schedule(cfg)
+        pl_module = DDPMTrainer(
+            generator=gen,
+            schedule=schedule,
+            learning_rate=cfg.generator.training.learning_rate,
+            weight_decay=cfg.generator.training.weight_decay,
+            cfg_dropout=cfg.generator.training.cfg_dropout,
+            freeze_backbone=cfg.generator.training.freeze_backbone,
+            min_snr_gamma=cfg.generator.training.get("min_snr_gamma", None),
+            prediction_type=cfg.generator.schedule.get("prediction_type", "eps"),
+            cfg_dropout_curriculum=_build_curriculum(cfg),
+        )
 
     import pytorch_lightning as pl
     from torch.utils.data import DataLoader

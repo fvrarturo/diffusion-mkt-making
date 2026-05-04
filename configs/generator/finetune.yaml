@@ -23,7 +23,25 @@ schedule:
   # wrong prediction_type to a checkpoint produces garbage at sample time.
   # Sampling scripts read this from the config or accept a `--prediction-type`
   # CLI override.
+  # NOTE: when generator.edm.enabled is true (Phase D / v6+), this field is
+  # ignored — EDM uses its own σ-spaced schedule and x_0-prediction with
+  # preconditioning instead.
   prediction_type: "v"
+
+# Phase D (v6+) — EDM training & sampling (Karras et al. 2022). When
+# enabled=true, the trainer uses EDMTrainer + the σ-weighted loss and the
+# generator wraps the inner TRADES-style denoiser with EDMDenoiser
+# preconditioning. The DDPM schedule above is ignored. Sampling must use
+# `--use-edm` to invoke the Heun 2nd-order sampler. Default: disabled
+# (v2-v5 DDPM/v-pred behavior preserved).
+edm:
+  enabled: true
+  sigma_min: 0.002
+  sigma_max: 80.0
+  sigma_data: 0.5                  # ≈ std of normalized training data; tune if it underperforms
+  rho: 7.0
+  P_mean: -1.2                     # log-normal σ sampling: log σ ~ N(P_mean, P_std)
+  P_std: 1.2
 
 training:
   learning_rate: 1.0e-4

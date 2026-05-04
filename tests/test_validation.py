@@ -549,3 +549,270 @@ def test_adaln_film_paths_independent():
     adaln_modules = [n for n, _ in gen_adaln.denoiser.named_modules()]
     assert any("adaln_blocks" in n for n in adaln_modules)
     assert not any("film_in" in n for n in adaln_modules)
+
+
+def test_forward_with_t_emb_matches_forward_film():
+    """forward_with_t_emb(x, t_embed_table[t], ctx) must equal forward(x, t, ctx)
+    for the FiLM path — the refactor introduces no semantic change."""
+    import torch
+    from diffmm.generator.trades_adapter import build_generator
+    from diffmm.data.dataset import N_FEATURES
+
+    torch.manual_seed(0)
+    gen = build_generator(
+        n_features=N_FEATURES, d_model=32, num_heads=4, depth=2,
+        max_seq_len=64, embed_dim=16, num_diffusionsteps=100,
+        conditioning_type="film",
+    )
+    gen.eval()
+    x = torch.randn(2, 16, N_FEATURES)
+    t = torch.tensor([5, 50], dtype=torch.long)
+    cond = torch.tensor([[0, 0, 1, 1], [2, 1, 1, 1]], dtype=torch.long)
+    ctx = gen.regime_embed(cond)
+    with torch.no_grad():
+        a = gen.denoiser.forward(x, t, ctx)
+        t_emb = gen.denoiser.t_embed_table[t]
+        b = gen.denoiser.forward_with_t_emb(x, t_emb, ctx)
+    assert torch.allclose(a, b, atol=1e-6)
+
+
+def test_forward_with_t_emb_matches_forward_adaln():
+    """Same identity check for the AdaLN path."""
+    import torch
+    from diffmm.generator.trades_adapter import build_generator
+    from diffmm.data.dataset import N_FEATURES
+
+    torch.manual_seed(0)
+    gen = build_generator(
+        n_features=N_FEATURES, d_model=32, num_heads=4, depth=2,
+        max_seq_len=64, embed_dim=16, num_diffusionsteps=100,
+        conditioning_type="adaln_zero",
+    )
+    gen.eval()
+    x = torch.randn(2, 16, N_FEATURES)
+    t = torch.tensor([5, 50], dtype=torch.long)
+    cond = torch.tensor([[0, 0, 1, 1], [2, 1, 1, 1]], dtype=torch.long)
+    ctx = gen.regime_embed(cond)
+    with torch.no_grad():
+        a = gen.denoiser.forward(x, t, ctx)
+        t_emb_raw = gen.denoiser.t_sinusoidal_table[t]
+        b = gen.denoiser.forward_with_t_emb(x, t_emb_raw, ctx)
+    assert torch.allclose(a, b, atol=1e-6)
+
+
+# ─── Phase D — EDM (Karras 2022) ───────────────────────────────────────
+
+def test_edm_schedule_get_sigmas_shape_and_endpoints():
+    import torch
+    from diffmm.generator.edm import EDMSchedule
+    s = EDMSchedule(sigma_min=0.002, sigma_max=80.0, rho=7.0)
+    sigmas = s.get_sigmas(n_steps=32, device="cpu")
+    assert sigmas.shape == (33,)        # n_steps + 1 (final 0)
+    assert torch.allclose(sigmas[0], torch.tensor(80.0), atol=1e-4)
+    # Final entry is 0 (clean data target)
+    assert float(sigmas[-1]) == 0.0
+    # Schedule is monotonically decreasing
+    assert (sigmas[:-1] >= sigmas[1:] - 1e-9).all()
+
+
+def test_edm_schedule_sample_train_sigma_in_expected_range():
+    import torch
+    from diffmm.generator.edm import EDMSchedule
+    torch.manual_seed(0)
+    s = EDMSchedule(P_mean=-1.2, P_std=1.2)
+    sigmas = s.sample_train_sigma(10000, device="cpu")
+    log_s = sigmas.log()
+    # log σ ~ N(P_mean, P_std). Empirical mean and std should be close.
+    assert abs(log_s.mean().item() - (-1.2)) < 0.05
+    assert abs(log_s.std().item() - 1.2) < 0.05
+
+
+def test_edm_schedule_loss_weight_correct_form():
+    import torch
+    from diffmm.generator.edm import EDMSchedule
+    s = EDMSchedule(sigma_data=0.5)
+    sigma = torch.tensor([0.1, 0.5, 1.0, 5.0])
+    w = s.loss_weight(sigma)
+    expected = (sigma ** 2 + 0.5 ** 2) / (sigma * 0.5) ** 2
+    assert torch.allclose(w, expected, atol=1e-6)
+
+
+def test_sinusoidal_continuous_shape_and_finite():
+    import torch
+    from diffmm.generator.edm import sinusoidal_continuous
+    val = torch.tensor([-3.0, 0.0, 3.0])
+    emb = sinusoidal_continuous(val, dim=64)
+    assert emb.shape == (3, 64)
+    assert torch.isfinite(emb).all()
+
+
+def test_edm_denoiser_preconditioning_at_extremes():
+    """At very low σ, c_skip → 1, c_out → 0; output should be ≈ x (identity).
+    At very high σ, c_skip → 0; output is dominated by c_out · F_θ."""
+    import torch
+    from diffmm.data.dataset import N_FEATURES
+    from diffmm.generator.edm import EDMDenoiser
+    from diffmm.generator.trades_adapter import TradesStyleDenoiser
+
+    torch.manual_seed(0)
+    inner = TradesStyleDenoiser(
+        n_features=N_FEATURES, d_model=32, num_heads=4, depth=2,
+        max_seq_len=64, ctx_dim=16, dropout=0.0,
+        conditioning_type="adaln_zero",
+    )
+    edm = EDMDenoiser(inner=inner, sigma_data=0.5)
+    edm.eval()
+    x = torch.randn(2, 16, N_FEATURES)
+    ctx = torch.randn(2, 16)
+    # Very low σ → output ≈ x
+    sigma_low = torch.full((2,), 1e-4)
+    with torch.no_grad():
+        y_low = edm(x, sigma_low, ctx)
+    # c_skip(1e-4) ≈ 1, c_out(1e-4) ≈ 1e-4 → y ≈ x
+    assert torch.allclose(y_low, x, atol=1e-2)
+
+
+def test_edm_denoiser_runs_with_film_inner():
+    """EDMDenoiser should also work with FiLM inner (not just AdaLN)."""
+    import torch
+    from diffmm.data.dataset import N_FEATURES
+    from diffmm.generator.edm import EDMDenoiser
+    from diffmm.generator.trades_adapter import TradesStyleDenoiser
+
+    torch.manual_seed(0)
+    inner = TradesStyleDenoiser(
+        n_features=N_FEATURES, d_model=32, num_heads=4, depth=2,
+        max_seq_len=64, ctx_dim=16, dropout=0.0,
+        conditioning_type="film",
+    )
+    edm = EDMDenoiser(inner=inner, sigma_data=0.5)
+    edm.eval()
+    x = torch.randn(2, 16, N_FEATURES)
+    sigma = torch.full((2,), 1.0)
+    ctx = torch.randn(2, 16)
+    with torch.no_grad():
+        y = edm(x, sigma, ctx)
+    assert y.shape == (2, 16, N_FEATURES)
+    assert torch.isfinite(y).all()
+
+
+def test_edm_sample_runs_and_produces_finite_output():
+    import torch
+    from diffmm.data.dataset import N_FEATURES
+    from diffmm.generator.edm import EDMSchedule, build_edm_generator, edm_sample
+
+    torch.manual_seed(0)
+    gen = build_edm_generator(
+        n_features=N_FEATURES, d_model=32, num_heads=4, depth=2,
+        max_seq_len=64, embed_dim=16,
+        conditioning_type="adaln_zero",
+        sigma_data=0.5,
+    )
+    schedule = EDMSchedule(sigma_min=0.01, sigma_max=10.0, sigma_data=0.5, rho=7.0)
+    cond = torch.tensor([[0, 0, 1, 1]])
+    null = gen.regime_embed.null_condition(1, device="cpu")
+    x = edm_sample(
+        predict_x0=gen.predict_noise,
+        shape=(1, 16, N_FEATURES),
+        schedule=schedule,
+        condition=cond, null_condition=null,
+        guidance_weight=1.0, n_steps=8, device="cpu", seed=0,
+    )
+    assert x.shape == (1, 16, N_FEATURES)
+    assert torch.isfinite(x).all()
+
+
+def test_edm_sample_euler_only_runs():
+    """Sanity: second_order=False (pure Euler) also works."""
+    import torch
+    from diffmm.data.dataset import N_FEATURES
+    from diffmm.generator.edm import EDMSchedule, build_edm_generator, edm_sample
+
+    torch.manual_seed(0)
+    gen = build_edm_generator(
+        n_features=N_FEATURES, d_model=32, num_heads=4, depth=2,
+        max_seq_len=64, embed_dim=16,
+        conditioning_type="adaln_zero",
+    )
+    schedule = EDMSchedule(sigma_min=0.01, sigma_max=10.0)
+    cond = torch.tensor([[0, 0, 1, 1]])
+    null = gen.regime_embed.null_condition(1, device="cpu")
+    x = edm_sample(
+        predict_x0=gen.predict_noise,
+        shape=(1, 16, N_FEATURES),
+        schedule=schedule,
+        condition=cond, null_condition=null,
+        guidance_weight=1.0, n_steps=8, device="cpu", seed=0,
+        second_order=False,
+    )
+    assert torch.isfinite(x).all()
+
+
+def test_edm_trainer_loss_decreases():
+    """EDMTrainer should decrease loss over a few epochs on synthetic data."""
+    import torch
+    from torch.utils.data import DataLoader
+    from diffmm.data.dataset import RandomWindowDataset, N_FEATURES
+    from diffmm.generator.edm import EDMSchedule, EDMTrainer, build_edm_generator
+    from diffmm.utils.seeding import seed_all
+
+    seed_all(0)
+    gen = build_edm_generator(
+        n_features=N_FEATURES, d_model=32, num_heads=4, depth=2,
+        max_seq_len=64, embed_dim=16,
+        conditioning_type="adaln_zero",
+        sigma_data=0.5,
+    )
+    schedule = EDMSchedule(sigma_data=0.5, P_mean=-1.0, P_std=0.8)  # narrower σ range for stability on tiny model
+    trainer = EDMTrainer(
+        generator=gen, schedule=schedule,
+        learning_rate=1e-3, cfg_dropout=0.1,
+    )
+    opt = trainer.configure_optimizers()
+    ds = RandomWindowDataset(n_windows=128, window_length=16)
+    loader = DataLoader(ds, batch_size=32, shuffle=True)
+    losses = []
+    for epoch in range(5):
+        for batch in loader:
+            opt.zero_grad()
+            loss = trainer.training_step(batch, 0)
+            loss.backward()
+            opt.step()
+            losses.append(loss.item())
+    assert all(l == l for l in losses), "EDM loss went NaN"  # noqa: E741, PLR0124
+    early = sum(losses[:8]) / 8
+    late = sum(losses[-8:]) / 8
+    assert late < early, f"EDM loss did not decrease: early={early:.4f} late={late:.4f}"
+
+
+def test_per_timestep_mse_handles_edm_schedule():
+    """The diagnostic should detect an EDMSchedule via duck-typing and use the
+    σ-based path instead of the t-based path."""
+    import torch
+    import numpy as np
+    from diffmm.data.dataset import N_FEATURES
+    from diffmm.eval import model_diagnostics
+    from diffmm.generator.edm import EDMSchedule, build_edm_generator
+
+    torch.manual_seed(0)
+    gen = build_edm_generator(
+        n_features=N_FEATURES, d_model=32, num_heads=4, depth=2,
+        max_seq_len=64, embed_dim=16,
+        conditioning_type="adaln_zero",
+        sigma_data=0.5,
+    )
+    schedule = EDMSchedule(sigma_min=0.01, sigma_max=10.0, sigma_data=0.5)
+    val_windows = [np.random.randn(16, N_FEATURES).astype(np.float32) for _ in range(8)]
+    res = model_diagnostics.per_timestep_mse(
+        gen, schedule, val_windows,
+        timesteps=[0, 1, 2, 3, 4],   # ti index, mapped onto the σ schedule
+        n_samples_per_t=4, device="cpu",
+    )
+    # Outputs are finite + correctly sized
+    assert res.timesteps.shape == (5,)
+    assert res.mse_mean.shape == (5,)
+    assert np.isfinite(res.mse_mean).all()
+    assert np.isfinite(res.snr).all()
+    # The Min-SNR weight column is replaced by EDM's λ(σ); should also be finite + positive
+    assert np.isfinite(res.min_snr_weight).all()
+    assert (res.min_snr_weight > 0).all()

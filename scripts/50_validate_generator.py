@@ -363,6 +363,11 @@ def main():
     ap.add_argument("--conditioning-type", default="film", choices=["film", "adaln_zero"],
                     help="Must match the conditioning_type the checkpoint was trained "
                          "with. v2-v4 = 'film' (default). v5+ Phase C = 'adaln_zero'.")
+    ap.add_argument("--use-edm", action="store_true",
+                    help="Phase D / v6+: validate an EDM checkpoint. When set, "
+                         "the model is built via build_edm_generator and Part E.2 "
+                         "uses σ-based per-timestep MSE.")
+    ap.add_argument("--edm-sigma-data", type=float, default=0.5)
     args = ap.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -388,24 +393,39 @@ def main():
         if not args.checkpoint or not args.norm_stats:
             log.error("Parts E/F require --checkpoint and --norm-stats")
             sys.exit(2)
-        log.info("loading checkpoint (prediction_type=%s, conditioning_type=%s)",
-                 args.prediction_type, args.conditioning_type)
-        from diffmm.generator.trades_adapter import build_generator
-        from diffmm.generator.sample import DDIMSchedule
+        log.info(
+            "loading checkpoint (prediction_type=%s, conditioning_type=%s, use_edm=%s)",
+            args.prediction_type, args.conditioning_type, args.use_edm,
+        )
         from diffmm.data.dataset import N_FEATURES
         import torch
-        generator = build_generator(
-            n_features=N_FEATURES, d_model=256, num_heads=8, depth=8,
-            max_seq_len=264, embed_dim=128, num_diffusionsteps=1000,
-            n_categories_per_axis=(3, 3, 3, 3),
-            conditioning_type=args.conditioning_type,
-        )
+        if args.use_edm:
+            from diffmm.generator.edm import (
+                EDMSchedule as _EDMSchedule, build_edm_generator,
+            )
+            generator = build_edm_generator(
+                n_features=N_FEATURES, d_model=256, num_heads=8, depth=8,
+                max_seq_len=264, embed_dim=128,
+                n_categories_per_axis=(3, 3, 3, 3),
+                conditioning_type=args.conditioning_type,
+                sigma_data=args.edm_sigma_data,
+            )
+            schedule = _EDMSchedule(sigma_data=args.edm_sigma_data)
+        else:
+            from diffmm.generator.trades_adapter import build_generator
+            from diffmm.generator.sample import DDIMSchedule
+            generator = build_generator(
+                n_features=N_FEATURES, d_model=256, num_heads=8, depth=8,
+                max_seq_len=264, embed_dim=128, num_diffusionsteps=1000,
+                n_categories_per_axis=(3, 3, 3, 3),
+                conditioning_type=args.conditioning_type,
+            )
+            schedule = DDIMSchedule.cosine(T=1000, prediction_type=args.prediction_type)
         state = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
         sd = {k.removeprefix("generator."): v for k, v in state["state_dict"].items()
               if k.startswith("generator.")}
         generator.load_state_dict(sd, strict=False)
         generator.to(args.device).eval()
-        schedule = DDIMSchedule.cosine(T=1000, prediction_type=args.prediction_type)
 
         if "E" in args.parts:
             all_results.update(_run_part_E(args, generator, schedule, real_per_day, args.out_dir))
