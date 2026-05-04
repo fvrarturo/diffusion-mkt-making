@@ -1,0 +1,7 @@
+# Laptop / dev defaults.
+device: cpu
+num_workers: 0
+data_root: ${oc.env:PWD}/data
+checkpoint_root: ${oc.env:PWD}/checkpoints
+synthetic_root: ${oc.env:PWD}/data/synthetic
+results_root: ${oc.env:PWD}/results

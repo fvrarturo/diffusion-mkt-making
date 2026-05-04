@@ -1,0 +1,14 @@
+# MIT Engaging cluster (eofe7.mit.edu / orcd-login*).
+# Project lives at ~/diff_mm on the cluster.
+device: cuda
+num_workers: 4
+data_root: /home/${oc.env:USER}/diff_mm/data
+checkpoint_root: /home/${oc.env:USER}/orcd/scratch/diffmm/checkpoints
+synthetic_root: /home/${oc.env:USER}/orcd/scratch/diffmm/synthetic
+results_root: /home/${oc.env:USER}/diff_mm/results
+
+# SLURM defaults — referenced in the .slurm headers, listed here for visibility.
+slurm:
+  partition_gpu: mit_normal_gpu       # 6h cap; switch to sched_mit_kburdge_r8 for 14d
+  partition_cpu: mit_normal           # 12h cap
+  account: null

@@ -1,0 +1,80 @@
+# Conditional DDPM fine-tuning.
+model:
+  embed_dim: 128
+  hidden_dim: 256                  # for MinimalDenoiser; ignored when TRADES is loaded
+  n_categories_per_axis: [3, 3, 3, 3]
+  use_pretrained_trades: false     # flip to true once trades_adapter is implemented
+  pretrained_checkpoint: null
+  # Phase C (v5+): "adaln_zero" — DiT-style per-block adaptive layer norm with
+  # zero-init residual gates. ~13× more conditioning capacity per layer than
+  # FiLM and starts as exact identity. Targets the FiLM-collapse failure mode
+  # (Work6_v4 §4: γ_in std/mean stuck at 2.88% across all FiLM-conditioning
+  # variants v2-v4 vs target 5%).
+  # Pre-Phase C (v2-v4): "film" — TRADES-style FiLM at start/end. Default for
+  # backwards compat with prior checkpoints.
+  conditioning_type: "adaln_zero"
+
+schedule:
+  type: cosine                     # cosine | linear
+  T: 1000
+  # Phase B (v4+): "v"   — predict v = √ᾱ_t·ε − √(1−ᾱ_t)·x_0 (Salimans & Ho 2022).
+  # Pre-Phase B (v2/v3/v3.5): "eps" — predict noise (Ho et al. 2020 standard).
+  # The choice must match what the checkpoint was trained with — passing the
+  # wrong prediction_type to a checkpoint produces garbage at sample time.
+  # Sampling scripts read this from the config or accept a `--prediction-type`
+  # CLI override.
+  prediction_type: "v"
+
+training:
+  learning_rate: 1.0e-4
+  weight_decay: 0.0
+  # CFG dropout 0.20 — used as the *steady-state* value when the curriculum
+  # below ramps to its final state. Work5 §F.2 showed that at p=0.10 the
+  # conditional path was active 90% of training and the model was satisfying
+  # the unconditional-path constraint by collapsing FiLM modulation to be
+  # near-identical regardless of c. 0.20 forces the unconditional path more
+  # often → conditional path can no longer ignore c.
+  cfg_dropout: 0.2
+
+  # Phase B conditioning curriculum: epochs 0..ramp_start are fully
+  # unconditional (cfg_dropout=1.0); then dropout linearly ramps to the
+  # `final` value over [ramp_start, ramp_end]. Forces the unconditional
+  # pathway to converge to a solid baseline before FiLM is asked to
+  # specialize across regimes. Disable by setting `enabled: false`, in
+  # which case the trainer uses the constant `cfg_dropout` value above.
+  cfg_dropout_curriculum:
+    enabled: true
+    initial: 1.0
+    final: 0.2                     # match cfg_dropout above
+    ramp_start_epoch: 2            # epochs 0,1 fully unconditional
+    ramp_end_epoch: 5              # epoch 5+ at steady-state CFG dropout
+  freeze_backbone: false           # true → only conditioning head trains
+  # Min-SNR loss weighting (Hang et al. 2023). γ=5.0 (back to v2 default after
+  # Phase A's γ=1.0 caused a kurtosis regression, 122 → 81). Min-SNR weight is
+  # `min(SNR, γ) / SNR`: at low-noise timesteps (SNR > γ) the weight is γ/SNR,
+  # which down-weights that band. Heavy-tail information lives in the
+  # low-noise band (fine-detail denoising), so smaller γ down-weights tail
+  # recovery — the OPPOSITE of what was intended. γ=5 keeps the down-weighting
+  # gentle enough that fine-detail learning isn't starved. Set to null to
+  # disable Min-SNR entirely (plain MSE).
+  min_snr_gamma: 5.0
+  batch_size: 64
+  max_epochs: 20
+  max_steps: null                  # override to cap training steps (useful for smoke)
+  limit_train_batches: null        # Lightning trainer arg; null = full epoch
+  limit_val_batches: null
+  gradient_clip_val: 1.0
+  precision: "bf16-mixed"          # cluster GPUs (H100/H200/L40S) all support bf16
+  # Patience 6 (was 3 for v2). v2 early-stopped at epoch 4 of 20, before FiLM
+  # had time to specialize across regimes. With FiLM now random-init'd
+  # (conditioning.py docstring) and CFG dropout doubled, conditioning needs
+  # more epochs to converge — bumping patience prevents premature stopping.
+  early_stopping_patience: 6
+  num_workers: 4
+
+checkpointing:
+  dir: checkpoints
+  save_top_k: 3
+  monitor: "val/loss"
+  mode: min
+  every_n_epochs: 5

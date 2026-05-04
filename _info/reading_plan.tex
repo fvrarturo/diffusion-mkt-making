@@ -1,0 +1,766 @@
+\documentclass[11pt,a4paper]{article}
+
+% ── Packages ──────────────────────────────────────────────
+\usepackage[margin=1in]{geometry}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{amsmath,amssymb}
+\usepackage{tcolorbox}
+\usepackage{tabularx}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage{multicol}
+\usepackage{marginnote}
+\usepackage{tikz}
+\usetikzlibrary{calc}
+
+% ── Colors ────────────────────────────────────────────────
+\definecolor{tier1}{RGB}{180,40,40}
+\definecolor{tier2}{RGB}{40,100,160}
+\definecolor{tier3}{RGB}{30,120,60}
+\definecolor{tier4}{RGB}{130,90,160}
+\definecolor{lightgray}{RGB}{245,245,245}
+\definecolor{linkblue}{RGB}{0,80,160}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=linkblue,
+  urlcolor=linkblue,
+  citecolor=linkblue
+}
+
+% ── Environments ──────────────────────────────────────────
+\newtcolorbox{paperbox}[2][]{
+  colback=#2!4, colframe=#2!70!black,
+  fonttitle=\bfseries, title={#1},
+  left=4pt, right=4pt, top=3pt, bottom=3pt,
+  boxrule=0.6pt
+}
+
+\newtcolorbox{focusbox}{
+  colback=lightgray, colframe=black!30,
+  left=4pt, right=4pt, top=3pt, bottom=3pt,
+  boxrule=0.4pt
+}
+
+% ── Header / Footer ──────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\small 15.458 Project F --- Reading Plan}
+\rhead{\small Spring 2026}
+\cfoot{\thepage}
+
+% ── Custom commands ───────────────────────────────────────
+\newcommand{\tierone}{\textcolor{tier1}{\textbf{[TIER 1 --- ESSENTIAL]}}}
+\newcommand{\tiertwo}{\textcolor{tier2}{\textbf{[TIER 2 --- IMPORTANT]}}}
+\newcommand{\tierthree}{\textcolor{tier3}{\textbf{[TIER 3 --- RECOMMENDED]}}}
+\newcommand{\tierfour}{\textcolor{tier4}{\textbf{[TIER 4 --- REFERENCE]}}}
+\newcommand{\readtime}[1]{\hfill\textit{\small Est.\ read: #1}}
+\newcommand{\projectlink}[1]{\par\smallskip\textcolor{black!60}{\small\textsf{Project connection:} #1}}
+
+\begin{document}
+
+% ══════════════════════════════════════════════════════════
+% TITLE
+% ══════════════════════════════════════════════════════════
+\begin{center}
+  {\LARGE\bfseries Reading Plan}\\[6pt]
+  {\Large Stress-Testing Market Makers with\\
+  Diffusion-Generated Counterfactual LOBs}\\[10pt]
+  {\large 15.458 Financial Data Science --- Spring 2026}\\[4pt]
+  {\normalsize Arturo Favara \quad Nick Bernardini \quad Maxime Vallot}\\[4pt]
+  {\small April 18, 2026}
+\end{center}
+
+\vspace{0.3cm}
+\hrule height 0.8pt
+\vspace{0.5cm}
+
+% ══════════════════════════════════════════════════════════
+% OVERVIEW
+% ══════════════════════════════════════════════════════════
+\section*{How to Use This Document}
+
+The project sits at the intersection of three fields: \textbf{market microstructure} (how limit order books work, how market makers quote), \textbf{generative modeling} (denoising diffusion models), and \textbf{backtesting methodology} (how to evaluate trading strategies).  No single paper covers all three, so this plan sequences readings to build understanding layer by layer.
+
+\subsection*{Tier System}
+
+\begin{itemize}
+  \item \tierone You cannot meaningfully contribute to the project without understanding this paper.  Read cover to cover before starting the corresponding phase.
+  \item \tiertwo Deepens a concept you will directly implement or test.  Read the key sections; skim the rest.
+  \item \tierthree Provides useful context, alternative perspectives, or related techniques.  Read the abstract and introduction; dive into sections only as needed.
+  \item \tierfour Reference material.  Consult specific sections when a question arises during implementation.
+\end{itemize}
+
+\subsection*{Suggested Sequencing}
+
+The reading order below is designed so that each paper builds on the previous ones.  Within each \textbf{Block}, papers are numbered in suggested reading order.  Blocks themselves are roughly chronological with the project phases.
+
+\begin{center}
+\small
+\begin{tabular}{llll}
+\toprule
+\textbf{Block} & \textbf{Topic} & \textbf{Project Phase} & \textbf{When to Read} \\
+\midrule
+A & Market Microstructure \& MM Theory & Phase 1, 3 & Weeks 1--2 \\
+B & Diffusion Models (Foundations) & Phase 2 & Weeks 2--3 \\
+C & Diffusion Models for LOBs & Phase 2 & Weeks 3--4 \\
+D & Evaluation \& Backtesting & Phase 2, 4, 5 & Weeks 4--5 \\
+E & Extensions \& Context & Any & As needed \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{0.3cm}
+\hrule height 0.4pt
+\newpage
+
+% ══════════════════════════════════════════════════════════
+%  BLOCK A: MARKET MICROSTRUCTURE
+% ══════════════════════════════════════════════════════════
+\section{Block A --- Market Microstructure and Market Making}
+
+\textit{Read this block first.  It establishes the financial problem, the agent designs, and the data semantics.  Everyone on the team should read A.1; the agent implementer must read A.1--A.3 thoroughly.}
+
+\bigskip
+
+% ── A.1 ──────────────────────────────────────────────────
+\begin{paperbox}[A.1 \quad Avellaneda \& Stoikov (2008) \quad\tierone]{tier1}
+
+\textbf{Title:} High-Frequency Trading in a Limit Order Book.\\
+\textbf{Journal:} \textit{Quantitative Finance}, 8(3), 217--224.\\
+\textbf{Link:} \url{https://doi.org/10.1080/14697680701381228}
+\readtime{2--3 hours}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{Sections 1--3} (the model setup): understand the mid-price dynamics $dS = \sigma\,dW$, the Poisson arrival model $\lambda^\pm(\delta) = Ae^{-\kappa\delta}$, and the exponential utility objective $-\exp(-\gamma(X_T + q_T S_T))$.
+  \item \textbf{Equation (10)} and surrounding discussion: the reservation price $r = S - q\gamma\sigma^2(T-t)$ and the optimal spread $\Delta = \gamma\sigma^2(T-t) + \frac{2}{\gamma}\ln(1 + \gamma/\kappa)$.  Understand \textit{why} the reservation price tilts against inventory and \textit{why} the spread is inventory-independent.
+  \item \textbf{Section 4} (numerical examples): the figures here build intuition for how quotes evolve over a trading day.
+\end{enumerate}
+\end{focusbox}
+
+\textbf{What you can skim:}
+The formal HJB derivation (Section 2.2) is elegant but the closed-form result is what matters for implementation.  You need to know the result, not re-derive it.
+
+\projectlink{This is Agent A1.  The reservation price formula and the spread formula are implemented verbatim.  Parameters $\gamma$, $\kappa$, $\sigma$ are calibrated from data.}
+\end{paperbox}
+
+\bigskip
+
+% ── A.2 ──────────────────────────────────────────────────
+\begin{paperbox}[A.2 \quad Cont, Kukanov \& Stoikov (2014) \quad\tierone]{tier1}
+
+\textbf{Title:} The Price Impact of Order Book Events.\\
+\textbf{Journal:} \textit{Journal of Financial Econometrics}, 12(1), 47--88.\\
+\textbf{Link:} \url{https://doi.org/10.1093/jjfinec/nbt003}
+\readtime{3--4 hours}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{Section 2} (the OFI definition): understand the sign convention for each type of event (bid up, bid unchanged, bid down; ask up, unchanged, down).  This is directly reproduced in your Appendix A.
+  \item \textbf{Section 3} (the contemporaneous regression $\Delta p = \beta \cdot \text{OFI} + \varepsilon$): this is the empirical backbone.  OFI predicts short-horizon price changes.
+  \item \textbf{Section 4} (results): focus on the $R^2$ values and the universality claim across stocks.  This is what makes OFI a useful signal for Agent A2.
+  \item \textbf{Table 1} and the sign-convention table: you will implement these directly.
+\end{enumerate}
+\end{focusbox}
+
+\textbf{What you can skim:}
+The cross-sectional analysis in the later sections and the connection to Kyle's lambda.
+
+\projectlink{OFI is used in three places: (1) as a regime feature $c_{\text{imb}}$; (2) as the skew term in Agent A2; (3) as a stylized-fact validation target (ACF of OFI, $E[r|I]$ plot).}
+\end{paperbox}
+
+\bigskip
+
+% ── A.3 ──────────────────────────────────────────────────
+\begin{paperbox}[A.3 \quad Easley, L\'opez de Prado \& O'Hara (2012) \quad\tierone]{tier1}
+
+\textbf{Title:} Flow Toxicity and Liquidity in a High-Frequency World.\\
+\textbf{Journal:} \textit{Review of Financial Studies}, 25(5), 1457--1493.\\
+\textbf{Link:} \url{https://doi.org/10.1093/rfs/hhs053}
+\readtime{2--3 hours}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{Section 2} (from PIN to VPIN): understand why classical PIN is inapplicable at high frequency and how VPIN provides a real-time alternative using volume buckets and bulk-volume classification (BVC).
+  \item \textbf{The VPIN formula} (Section 2.3): $\text{VPIN}_n = \frac{1}{n}\sum_{k} |V^B_k - V^S_k| / V$.  Make sure you understand each term: the equal-volume bucketing, the BVC signing, and the rolling window $W$.
+  \item \textbf{Section 3} (the Flash Crash analysis): this is the motivating example.  VPIN spiked \textit{before} the crash, which is why it's useful as a toxicity warning for Agent A3.
+\end{enumerate}
+\end{focusbox}
+
+\textbf{What you can skim:}
+The formal information model (Section 1) and the connection to the original Easley--O'Hara sequential trade model.
+
+\projectlink{VPIN is used in two places: (1) as a regime feature $c_{\text{vpin}}$; (2) as the gating variable in Agent A3 (spread widening when VPIN $ > \tau$).}
+\end{paperbox}
+
+\bigskip
+
+% ── A.4 ──────────────────────────────────────────────────
+\begin{paperbox}[A.4 \quad Gu\'eant, Lehalle \& Fernandez-Tapia (2013) \quad\tierthree]{tier3}
+
+\textbf{Title:} Dealing with the Inventory Risk: A Solution to the Market Making Problem.\\
+\textbf{Journal:} \textit{Mathematics and Financial Economics}, 7(4), 477--507.\\
+\textbf{Link:} \url{https://doi.org/10.1007/s11579-012-0093-0}
+\readtime{1--2 hours (targeted)}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{Sections 1--2}: how this paper generalizes Avellaneda--Stoikov by adding inventory constraints and a running penalty.
+  \item \textbf{The comparison} to AS: understand that AS is the limiting case with no hard inventory bounds and exponential utility.
+\end{enumerate}
+\end{focusbox}
+
+\textbf{Why read it:}
+It provides a richer view of the MM optimization problem.  If your AS agent hits inventory limits in stress regimes, this paper suggests how to handle it more gracefully.
+
+\projectlink{Not directly implemented, but useful context if you add inventory limits to the fill simulator or want to discuss extensions in the report.}
+\end{paperbox}
+
+\bigskip
+
+% ── A.5 ──────────────────────────────────────────────────
+\begin{paperbox}[A.5 \quad Lee \& Ready (1991) \quad\tiertwo]{tier2}
+
+\textbf{Title:} Inferring Trade Direction from Intraday Data.\\
+\textbf{Journal:} \textit{Journal of Finance}, 46(2), 733--746.\\
+\textbf{Link:} \url{https://doi.org/10.1111/j.1540-6261.1991.tb02683.x}
+\readtime{1 hour}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{The algorithm itself:} compare trade price to the midpoint of the prevailing bid and ask.  Above mid $\Rightarrow$ buyer-initiated; below $\Rightarrow$ seller-initiated.  At mid $\Rightarrow$ apply the tick test (compare to the last different trade price).
+  \item \textbf{The 5-second delay:} Lee--Ready recommend lagging the quote by 5 seconds to account for quote reporting delays.  This matters less in modern data but you should decide whether to apply it.
+\end{enumerate}
+\end{focusbox}
+
+\projectlink{You implement Lee--Ready (and optionally BVC) in the data cleaning pipeline (Task 1.2) to sign trades.  Trade signing feeds into OFI computation and VPIN.}
+\end{paperbox}
+
+\bigskip
+
+% ── A.6 ──────────────────────────────────────────────────
+\begin{paperbox}[A.6 \quad Stoikov (2018) \quad\tierfour]{tier4}
+
+\textbf{Title:} The Micro-Price: A High-Frequency Estimator of Future Prices.\\
+\textbf{Journal:} \textit{Quantitative Finance}, 18(12), 1959--1966.\\
+\textbf{Link:} \url{https://doi.org/10.1080/14697688.2018.1480119}
+\readtime{45 min}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+The micro-price $\tilde{S} = p^a \cdot I^{+} + p^b \cdot (1 - I^{+})$ where $I^{+}$ is the imbalance-adjusted weight.  This is a better fair-value estimator than the naive midpoint.
+\end{focusbox}
+
+\projectlink{Stretch goal: use the micro-price as the reference price for a fourth agent, or as an improved midpoint in the fill simulator.}
+\end{paperbox}
+
+\bigskip
+
+% ── A.7 ──────────────────────────────────────────────────
+\begin{paperbox}[A.7 \quad Kolm, Turiel \& Westray (2023) \quad\tierfour]{tier4}
+
+\textbf{Title:} Deep Order Flow Imbalance: Extracting Alpha at Multiple Horizons from the Limit Order Book.\\
+\textbf{Journal:} \textit{Mathematical Finance}.\\
+\textbf{Link:} \url{https://doi.org/10.1111/mafi.12413}
+\readtime{1 hour (targeted)}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{Section 2}: the multi-level OFI generalization beyond top-of-book.
+  \item \textbf{Section 3}: how deep learning extracts alpha from OFI at multiple horizons.
+\end{enumerate}
+\end{focusbox}
+
+\projectlink{Context for understanding why OFI is a strong signal.  Relevant if you have depth data and want to extend Agent A2 with multi-level OFI.}
+\end{paperbox}
+
+
+\newpage
+% ══════════════════════════════════════════════════════════
+%  BLOCK B: DIFFUSION MODELS (FOUNDATIONS)
+% ══════════════════════════════════════════════════════════
+\section{Block B --- Diffusion Models: Foundations}
+
+\textit{Read this block before starting Phase 2 (generator training).  The ML lead must read B.1--B.3 thoroughly.  Everyone should read B.1 at least through the key equations.}
+
+\bigskip
+
+% ── B.1 ──────────────────────────────────────────────────
+\begin{paperbox}[B.1 \quad Ho, Jain \& Abbeel (2020) \quad\tierone]{tier1}
+
+\textbf{Title:} Denoising Diffusion Probabilistic Models.\\
+\textbf{Conference:} NeurIPS 2020.\\
+\textbf{Link:} \url{https://arxiv.org/abs/2006.11239}
+\readtime{3--4 hours}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{Section 2} (Background): the forward noising process $q(x_t | x_0) = \mathcal{N}(\sqrt{\bar\alpha_t}\, x_0,\; (1-\bar\alpha_t)I)$.  Understand the reparameterization trick and the meaning of the noise schedule $\{\beta_t\}$.
+  \item \textbf{Section 3.2} (the simplified objective): $L_{\text{simple}} = \mathbb{E}[\|\varepsilon - \varepsilon_\theta(\sqrt{\bar\alpha_t}\,x_0 + \sqrt{1-\bar\alpha_t}\,\varepsilon,\; t)\|^2]$.  This is the training loss you will use.  Understand that the network $\varepsilon_\theta$ \textit{predicts the noise}, not the clean sample.
+  \item \textbf{Section 4} (Experiments): the image results are not directly relevant, but the ablation on noise schedules and the connection to variational bounds build intuition.
+  \item \textbf{Algorithm 1} (Training) and \textbf{Algorithm 2} (Sampling): these are the core loops.  Your training code implements Algorithm 1; your sampler starts from Algorithm 2 before switching to DDIM.
+\end{enumerate}
+\end{focusbox}
+
+\textbf{What you can skim:}
+The connection to score matching (this is covered more cleanly in B.3).  The detailed variational bound derivation (Section 3.1).
+
+\projectlink{This is the foundational paper for the generator.  The DDPM training objective (Algorithm 2 in the proposal) is Algorithm 1 from this paper, adapted for LOB tensors.}
+\end{paperbox}
+
+\bigskip
+
+% ── B.2 ──────────────────────────────────────────────────
+\begin{paperbox}[B.2 \quad Song, Meng \& Ermon (2021) \quad\tierone]{tier1}
+
+\textbf{Title:} Denoising Diffusion Implicit Models.\\
+\textbf{Conference:} ICLR 2021.\\
+\textbf{Link:} \url{https://arxiv.org/abs/2010.02502}
+\readtime{2--3 hours}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{Section 3} (Non-Markovian forward processes): the key insight is that you can define a family of reverse processes that all share the same marginals $q(x_t|x_0)$ as DDPM but allow \textit{deterministic} sampling.
+  \item \textbf{Equation (12)} (the DDIM update): $x_{t-1} = \sqrt{\bar\alpha_{t-1}}\,\hat{x}_0(x_t) + \sqrt{1 - \bar\alpha_{t-1}}\,\varepsilon_\theta(x_t, t)$.  This is the formula you implement in the sampler.
+  \item \textbf{Section 4.2} (Accelerated generation): DDIM allows subsampling the 1000-step chain to $S = 20$ steps with modest quality loss.  This is how you get a $50\times$ speedup.
+  \item \textbf{$\sigma = 0$}: the deterministic case.  Understand that setting $\sigma = 0$ makes DDIM fully deterministic given a noise vector --- useful for reproducibility.
+\end{enumerate}
+\end{focusbox}
+
+\textbf{What you can skim:}
+The interpolation experiments (Section 4.3) and the comparison to GANs.
+
+\projectlink{Algorithm 3 in the proposal (DDIM sampling with classifier-free guidance) is a direct application of this paper.  Your default is $S = 20$ steps.}
+\end{paperbox}
+
+\bigskip
+
+% ── B.3 ──────────────────────────────────────────────────
+\begin{paperbox}[B.3 \quad Ho \& Salimans (2022) \quad\tierone]{tier1}
+
+\textbf{Title:} Classifier-Free Diffusion Guidance.\\
+\textbf{Conference:} NeurIPS 2021 Workshop on Deep Generative Models and Downstream Applications.\\
+\textbf{Link:} \url{https://arxiv.org/abs/2207.12598}
+\readtime{1--1.5 hours (short paper)}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{The core idea (Section 2):} train a single model that accepts both $(x_t, t, c)$ and $(x_t, t, \varnothing)$ by randomly dropping the condition $c$ with probability $p_{\text{drop}}$ during training.
+  \item \textbf{The guided sampling formula:} $\tilde\varepsilon_\theta = (1+w)\,\varepsilon_\theta(x_t, t, c) - w\,\varepsilon_\theta(x_t, t, \varnothing)$.  At $w = 0$: unconditional.  At $w > 0$: sharper conditioning at the cost of diversity.
+  \item \textbf{The tradeoff:} higher $w$ gives stronger conditioning fidelity but can push samples out of distribution.  You will sweep $w \in \{0, 1, 3, 5\}$.
+\end{enumerate}
+\end{focusbox}
+
+\textbf{Note:} This is a short workshop paper.  The entire thing is worth reading cover to cover.
+
+\projectlink{Classifier-free guidance is how you condition the generator on regime labels (vol, VPIN, imbalance, time-of-day) without training separate models per regime.  It is the mechanism that makes stress-scenario generation possible.}
+\end{paperbox}
+
+\bigskip
+
+% ── B.4 ──────────────────────────────────────────────────
+\begin{paperbox}[B.4 \quad Song, Sohl-Dickstein, Kingma, Kumar, Ermon \& Poole (2021) \quad\tiertwo]{tier2}
+
+\textbf{Title:} Score-Based Generative Modeling through Stochastic Differential Equations.\\
+\textbf{Conference:} ICLR 2021.\\
+\textbf{Link:} \url{https://arxiv.org/abs/2011.13456}
+\readtime{2--3 hours (targeted)}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{Section 2} (the SDE framework): the forward SDE $dx = f(x,t)\,dt + g(t)\,dW$ and the reverse SDE $dx = [f - g^2 \nabla_x \log p_t(x)]\,dt + g\,d\bar{W}$.  This unifies DDPM, SMLD, and score matching under one roof.
+  \item \textbf{The connection} $\nabla_x \log p_t(x) \approx -\varepsilon_\theta(x_t, t) / \sqrt{1-\bar\alpha_t}$: this is why training a noise predictor $\varepsilon_\theta$ is equivalent to learning the score function.
+  \item \textbf{Section 3} (controllable generation): this is the precursor to classifier-free guidance.
+\end{enumerate}
+\end{focusbox}
+
+\textbf{What you can skim:}
+The ODE probability flow (Section 4), the likelihood computation, and the comparison to normalizing flows.
+
+\projectlink{This paper provides the theoretical grounding cited in Section 4.3.3 of the proposal.  You do not need to implement the SDE sampler, but understanding the score--noise duality helps when debugging the generator.}
+\end{paperbox}
+
+\bigskip
+
+% ── B.5 ──────────────────────────────────────────────────
+\begin{paperbox}[B.5 \quad Lilian Weng, ``What Are Diffusion Models?'' (2021) \quad\tiertwo]{tier2}
+
+\textbf{Title:} What Are Diffusion Models?\\
+\textbf{Type:} Blog post.\\
+\textbf{Link:} \url{https://lilianweng.github.io/posts/2021-07-11-diffusion-models/}
+\readtime{1.5--2 hours}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+This is the single best expository treatment of diffusion models.  It walks through DDPM, score matching, and DDIM with clear notation and diagrams.  Read it \textit{before} the original papers if the math feels dense.
+\end{focusbox}
+
+\projectlink{No direct project connection, but this will save you hours of confusion when reading B.1--B.4.}
+\end{paperbox}
+
+
+\newpage
+% ══════════════════════════════════════════════════════════
+%  BLOCK C: DIFFUSION MODELS FOR LOBs
+% ══════════════════════════════════════════════════════════
+\section{Block C --- Diffusion Models for Limit Order Books}
+
+\textit{This block connects the general diffusion framework to the specific financial domain.  The ML lead and validation lead must both read C.1.}
+
+\bigskip
+
+% ── C.1 ──────────────────────────────────────────────────
+\begin{paperbox}[C.1 \quad Berti, Prenkaj \& Velardi (2025) --- TRADES \quad\tierone]{tier1}
+
+\textbf{Title:} TRADES: Generating Realistic Market Simulations with Diffusion Models.\\
+\textbf{Preprint:} arXiv:2502.07071, February 2025.\\
+\textbf{Code:} \url{https://github.com/LeonardoBerti00/DeepMarket}
+\readtime{4--5 hours (paper + code browsing)}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{Section 3} (Data representation): how an LOB observation is encoded as a structured tensor $x^{(i)} = (\Delta t_i, \text{type}_i, \text{price}_i, \text{size}_i, \text{depth}^{\text{bid}}_{1:K}, \text{depth}^{\text{ask}}_{1:K})$.  This is the format your DataLoader must produce.
+  \item \textbf{Section 4} (Architecture): the transformer denoiser with temporal attention, feature attention, and FiLM conditioning.  Understand the FiLM layer: $\gamma(c) \odot h + \beta(c)$ where $\gamma, \beta$ are learned from the conditioning embedding.
+  \item \textbf{Section 5} (Training): the classifier-free guidance setup, the noise schedule, and the training hyperparameters.
+  \item \textbf{Section 6} (Experiments): the stylized-fact validation procedure.  This is the benchmark your generator must pass.
+  \item \textbf{The code}: browse \texttt{deepmarket/models/trades.py} and \texttt{deepmarket/sampling/} to understand the checkpoint format and the inference API.
+\end{enumerate}
+\end{focusbox}
+
+\textbf{Critical implementation detail:}  Check whether the pre-trained checkpoints expect LOBSTER-format depth (10 levels) or NBBO-only.  This determines your data pipeline.
+
+\projectlink{TRADES is the starting point for the generator.  You load their checkpoint, adapt the conditioning head for your regime features, and fine-tune.  The code provides the inference API you call in Algorithm 3.}
+\end{paperbox}
+
+\bigskip
+
+% ── C.2 ──────────────────────────────────────────────────
+\begin{paperbox}[C.2 \quad Backhouse, Dou, Moreno-Pino, Rauscher \& Zohren (2025) \quad\tiertwo]{tier2}
+
+\textbf{Title:} Painting the Market: Generative Diffusion Models for Financial Limit Order Book Simulation and Forecasting.\\
+\textbf{Preprint:} arXiv (2025); also referred to as ``DiffLOB.''\\
+\textbf{Link:} Search for ``LOB-Bench'' or the arXiv ID.
+\readtime{2--3 hours}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{The LOB-Bench evaluation suite}: 12 stylized-fact scores grouped into marginal distributions, temporal structure, and cross-feature structure.  This is your validation protocol.
+  \item \textbf{Section 4} (Evaluation methodology): understand each metric (Wasserstein-1, ACF comparison, conditional moments) and the passing thresholds.
+  \item \textbf{Comparison to TRADES}: where does DiffLOB improve on TRADES, and where are they similar?  This contextualizes your own validation results.
+\end{enumerate}
+\end{focusbox}
+
+\projectlink{LOB-Bench is the validation harness used in Phase 2, Task 2.4.  If an installable package exists, use it directly; otherwise, re-implement the 12 scores from the paper.}
+\end{paperbox}
+
+\bigskip
+
+% ── C.3 ──────────────────────────────────────────────────
+\begin{paperbox}[C.3 \quad Cont, Cucuringu, Kochems \& Prenzel (2023) \quad\tierthree]{tier3}
+
+\textbf{Title:} Limit Order Book Simulation with Generative Adversarial Networks.\\
+\textbf{Preprint:} SSRN 4512356.\\
+\textbf{Link:} \url{https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4512356}
+\readtime{1.5 hours (targeted)}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{Section 2--3}: the GAN-based approach to LOB simulation.  Understand the difference: GANs optimize a min-max objective and can suffer mode collapse; diffusion models optimize a likelihood-equivalent objective and avoid it.
+  \item \textbf{Section 5} (Evaluation): their stylized-fact tests overlap with LOB-Bench.  Useful for understanding what metrics the community considers important.
+\end{enumerate}
+\end{focusbox}
+
+\projectlink{This is the GAN baseline mentioned in the proposal's comparison table (Section 2.2).  Your generator's Wasserstein scores should beat this baseline.}
+\end{paperbox}
+
+\bigskip
+
+% ── C.4 ──────────────────────────────────────────────────
+\begin{paperbox}[C.4 \quad Coletta et al.\ (2023) --- Stock-GAN / CGAN variants \quad\tierfour]{tier4}
+
+\textbf{Title:} Various (``Conditional GAN for Limit Order Books'', ``Stock-GAN'').\\
+\textbf{Type:} Multiple related papers.\\
+\readtime{Skim abstracts; consult as needed}
+
+\begin{focusbox}
+These papers explore conditional adversarial generation of LOB data. They are useful as comparison points in the ``Related Work'' section of your report, but you do not need to implement anything from them.
+\end{focusbox}
+
+\projectlink{Report context only.}
+\end{paperbox}
+
+
+\newpage
+% ══════════════════════════════════════════════════════════
+%  BLOCK D: EVALUATION & BACKTESTING
+% ══════════════════════════════════════════════════════════
+\section{Block D --- Evaluation Methodology and Backtesting}
+
+\textit{Read this block while the generator is training (Weeks 4--5).  The analysis lead and the agent implementer should both read D.1.}
+
+\bigskip
+
+% ── D.1 ──────────────────────────────────────────────────
+\begin{paperbox}[D.1 \quad Bailey, Borwein, L\'opez de Prado \& Zhu (2014) \quad\tiertwo]{tier2}
+
+\textbf{Title:} Pseudo-Mathematics and Financial Charlatanism: The Effects of Backtest Overfitting on Out-of-Sample Performance.\\
+\textbf{Journal:} \textit{Notices of the AMS}, 61(5).\\
+\textbf{Link:} \url{https://doi.org/10.1090/noti1105}
+\readtime{1.5 hours}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{The backtest overfitting problem}: how running many strategies on the same historical data inflates the best-looking Sharpe ratio.
+  \item \textbf{The deflated Sharpe ratio}: adjusting for the number of trials.
+  \item \textbf{The ``selection of history'' problem}: this is exactly the replay problem your project addresses.
+\end{enumerate}
+\end{focusbox}
+
+\projectlink{Motivates the entire project.  Your Discussion section should connect your findings to this literature: does synthetic stress testing help avoid the backtest overfitting trap?}
+\end{paperbox}
+
+\bigskip
+
+% ── D.2 ──────────────────────────────────────────────────
+\begin{paperbox}[D.2 \quad Harvey, Liu \& Zhu (2016) \quad\tierthree]{tier3}
+
+\textbf{Title:} \ldots and the Cross-Section of Expected Returns.\\
+\textbf{Journal:} \textit{Review of Financial Studies}, 29(1), 5--68.\\
+\textbf{Link:} \url{https://doi.org/10.1093/rfs/hhv059}
+\readtime{1 hour (introduction + Section 2)}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+The multiple testing correction framework.  When you compare 3 agents on 4 regimes, you're running 12 implicit tests.  This paper's framework reminds you to be honest about statistical power.
+\end{focusbox}
+
+\projectlink{Relevant for the bootstrap hypothesis test in Phase 5.  You should report whether your $\rho$ difference survives a multiple-testing adjustment.}
+\end{paperbox}
+
+\bigskip
+
+% ── D.3 ──────────────────────────────────────────────────
+\begin{paperbox}[D.3 \quad Byrd, Hybinette \& Balch (2020) --- ABIDES \quad\tierthree]{tier3}
+
+\textbf{Title:} ABIDES: Towards High-Fidelity Multi-Agent Market Simulation.\\
+\textbf{Conference:} ACM SIGSIM-PADS 2020.\\
+\textbf{Link:} \url{https://arxiv.org/abs/1904.12066}
+\readtime{1 hour}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{The agent-based simulation philosophy}: each market participant is a separate agent with its own logic.  The LOB emerges from their interactions.
+  \item \textbf{The realism--interactivity tradeoff}: ABIDES is interactive (your agent's quotes affect the book) but calibration is hard.
+\end{enumerate}
+\end{focusbox}
+
+\projectlink{ABIDES represents the agent-based alternative to your diffusion-based approach.  Understanding its strengths and weaknesses helps you position your contribution in the report.  Also relevant if you attempt the stretch goal of interactive simulation (feeding agent quotes back into the generator).}
+\end{paperbox}
+
+\bigskip
+
+% ── D.4 ──────────────────────────────────────────────────
+\begin{paperbox}[D.4 \quad Farmer, Patelli \& Zovko (2005) \quad\tierfour]{tier4}
+
+\textbf{Title:} The Predictive Power of Zero Intelligence in Financial Markets.\\
+\textbf{Journal:} \textit{Proceedings of the National Academy of Sciences}, 102(6), 2254--2259.\\
+\textbf{Link:} \url{https://doi.org/10.1073/pnas.0409157102}
+\readtime{45 min}
+
+\begin{focusbox}
+The original zero-intelligence LOB model.  Useful for understanding the baseline ``what can random order placement explain?'' and for positioning the diffusion generator as a step up.
+\end{focusbox}
+
+\projectlink{Context for the simulator comparison table in Section 2.2 of the proposal.}
+\end{paperbox}
+
+
+\newpage
+% ══════════════════════════════════════════════════════════
+%  BLOCK E: EXTENSIONS & CONTEXT
+% ══════════════════════════════════════════════════════════
+\section{Block E --- Extensions, Context, and Deeper Dives}
+
+\textit{These papers are not required for the core project but enrich understanding or support stretch goals.  Read selectively based on your role and available time.}
+
+\bigskip
+
+% ── E.1 ──────────────────────────────────────────────────
+\begin{paperbox}[E.1 \quad Cont \& Larrard (2013) \quad\tierfour]{tier4}
+
+\textbf{Title:} Price Dynamics in a Markovian Limit Order Market.\\
+\textbf{Journal:} \textit{SIAM Journal on Financial Mathematics}, 4(1), 1--25.\\
+\readtime{Consult as needed}
+
+\begin{focusbox}
+The continuous-time Markov model of top-of-book dynamics.  Useful for understanding the stochastic modeling approach to LOBs that diffusion models replace.
+\end{focusbox}
+
+\projectlink{Background for the ``stochastic point process'' row in the simulator comparison table.}
+\end{paperbox}
+
+\bigskip
+
+% ── E.2 ──────────────────────────────────────────────────
+\begin{paperbox}[E.2 \quad Perez, Nicoli \& Germain (2023) \quad\tierfour]{tier4}
+
+\textbf{Title:} FiLM: Visual Reasoning with a General Conditioning Layer.\\
+\textbf{Conference:} AAAI 2018.\\
+\textbf{Link:} \url{https://arxiv.org/abs/1709.07871}
+\readtime{30 min (Section 3 only)}
+
+\begin{focusbox}
+FiLM (Feature-wise Linear Modulation) is the conditioning mechanism used in the TRADES denoiser.  The idea: $\text{FiLM}(h; \gamma, \beta) = \gamma \odot h + \beta$ where $\gamma, \beta$ are predicted from the conditioning input.  This is simple but powerful for injecting regime information into the transformer.
+\end{focusbox}
+
+\projectlink{Understanding FiLM helps when modifying the conditioning head in Phase 2, Task 2.2.}
+\end{paperbox}
+
+\bigskip
+
+% ── E.3 ──────────────────────────────────────────────────
+\begin{paperbox}[E.3 \quad Paszke et al.\ (2019) --- PyTorch \quad\tierfour]{tier4}
+
+\textbf{Title:} PyTorch: An Imperative Style, High-Performance Deep Learning Library.\\
+\textbf{Conference:} NeurIPS 2019.\\
+\textbf{Link:} \url{https://arxiv.org/abs/1912.01703}
+\readtime{Reference only}
+
+\begin{focusbox}
+Not a ``reading'' per se, but keep the PyTorch documentation (\url{https://pytorch.org/docs/stable/}) bookmarked.  You will need it constantly.
+\end{focusbox}
+\end{paperbox}
+
+\bigskip
+
+% ── E.4 ──────────────────────────────────────────────────
+\begin{paperbox}[E.4 \quad Cartea, Jaimungal \& Penalva (2015) --- Textbook \quad\tierthree]{tier3}
+
+\textbf{Title:} Algorithmic and High-Frequency Trading.\\
+\textbf{Publisher:} Cambridge University Press.\\
+\readtime{Consult chapters 10--11}
+
+\begin{focusbox}
+\textbf{What to focus on:}
+\begin{enumerate}[nosep]
+  \item \textbf{Chapter 10}: Market making models.  This gives a textbook treatment of Avellaneda--Stoikov and its extensions, with worked examples.
+  \item \textbf{Chapter 11}: Optimal execution.  Not directly used but provides context for why inventory control matters.
+\end{enumerate}
+\end{focusbox}
+
+\projectlink{The best textbook reference for the MM theory underlying Agents A1--A3.  Useful if the original AS paper feels terse.}
+\end{paperbox}
+
+\bigskip
+
+% ── E.5 ──────────────────────────────────────────────────
+\begin{paperbox}[E.5 \quad Hasbrouck (2007) --- Textbook \quad\tierfour]{tier4}
+
+\textbf{Title:} Empirical Market Microstructure.\\
+\textbf{Publisher:} Oxford University Press.\\
+\readtime{Consult chapters 1--4}
+
+\begin{focusbox}
+The standard reference for empirical microstructure: bid-ask spreads, trade classification, adverse selection, price impact.  Useful for grounding your data pipeline decisions.
+\end{focusbox}
+\end{paperbox}
+
+
+\newpage
+% ══════════════════════════════════════════════════════════
+%  READING ORDER SUMMARY
+% ══════════════════════════════════════════════════════════
+\section*{Complete Reading Order (Suggested Sequence)}
+
+\begin{center}
+\small
+\renewcommand{\arraystretch}{1.25}
+\begin{longtable}{cllccl}
+\toprule
+\textbf{\#} & \textbf{Paper} & \textbf{Short Title} & \textbf{Tier} & \textbf{Est.} & \textbf{Read By} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{\#} & \textbf{Paper} & \textbf{Short Title} & \textbf{Tier} & \textbf{Est.} & \textbf{Read By} \\
+\midrule
+\endhead
+1 & A.1 & Avellaneda--Stoikov (2008) & \textcolor{tier1}{T1} & 3h & Everyone \\
+2 & A.2 & Cont--Kukanov--Stoikov (2014) & \textcolor{tier1}{T1} & 4h & Everyone \\
+3 & A.3 & Easley--LdP--O'Hara (2012) & \textcolor{tier1}{T1} & 3h & Everyone \\
+4 & A.5 & Lee \& Ready (1991) & \textcolor{tier2}{T2} & 1h & Data Lead \\
+\midrule
+5 & B.5 & Weng blog post (2021) & \textcolor{tier2}{T2} & 2h & Everyone \\
+6 & B.1 & Ho--Jain--Abbeel (2020) & \textcolor{tier1}{T1} & 4h & ML Lead; skim by all \\
+7 & B.2 & Song--Meng--Ermon, DDIM (2021) & \textcolor{tier1}{T1} & 3h & ML Lead \\
+8 & B.3 & Ho \& Salimans, CFG (2022) & \textcolor{tier1}{T1} & 1.5h & ML Lead; skim by all \\
+9 & B.4 & Song et al., Score SDE (2021) & \textcolor{tier2}{T2} & 3h & ML Lead \\
+\midrule
+10 & C.1 & Berti et al., TRADES (2025) & \textcolor{tier1}{T1} & 5h & ML + Val Lead \\
+11 & C.2 & Backhouse et al., LOB-Bench (2025) & \textcolor{tier2}{T2} & 3h & Val Lead \\
+12 & C.3 & Cont et al., GAN-LOB (2023) & \textcolor{tier3}{T3} & 1.5h & Anyone \\
+\midrule
+13 & D.1 & Bailey et al., Backtest Overfit (2014) & \textcolor{tier2}{T2} & 1.5h & Analysis Lead \\
+14 & D.3 & Byrd et al., ABIDES (2020) & \textcolor{tier3}{T3} & 1h & Anyone \\
+\midrule
+15 & A.4 & Gu\'eant et al.\ (2013) & \textcolor{tier3}{T3} & 2h & Val+MM Lead \\
+16 & A.6 & Stoikov, Microprice (2018) & \textcolor{tier4}{T4} & 45m & Stretch \\
+17 & A.7 & Kolm et al., Deep OFI (2023) & \textcolor{tier4}{T4} & 1h & Stretch \\
+18 & D.2 & Harvey et al., Multiple Testing (2016) & \textcolor{tier3}{T3} & 1h & Analysis Lead \\
+19 & E.4 & Cartea et al., Textbook Ch.\ 10--11 & \textcolor{tier3}{T3} & 2h & Val+MM Lead \\
+20 & D.4 & Farmer et al., Zero Intel.\ (2005) & \textcolor{tier4}{T4} & 45m & Anyone \\
+\midrule
+ & & \textbf{Total (Tier 1 only)} & & \textbf{$\sim$23h} & \\
+ & & \textbf{Total (Tier 1 + 2)} & & \textbf{$\sim$35h} & \\
+ & & \textbf{Total (all papers)} & & \textbf{$\sim$45h} & \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\section*{Minimum Reading by Role}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lXc}
+\toprule
+\textbf{Role} & \textbf{Must-Read Papers} & \textbf{Hours} \\
+\midrule
+Data Lead & A.1, A.2, A.3, A.5, B.5 & $\sim$13h \\
+ML Lead & A.1 (skim), B.1, B.2, B.3, B.4, B.5, C.1 & $\sim$21h \\
+Validation + MM Lead & A.1, A.2, A.3, C.1, C.2 & $\sim$18h \\
+Analysis + Writing Lead & A.1, A.2, A.3, B.5, D.1 & $\sim$14h \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section*{A Note on Reading Strategy}
+
+For the Tier 1 papers, active reading works better than passive. For each paper, try to:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Before reading:} Write down what you think the paper will say based on its title and the proposal's description.
+  \item \textbf{During reading:} Map every key equation to the corresponding line in the proposal.  If the proposal cites ``Equation (10) from AS,'' find it and verify.
+  \item \textbf{After reading:} Write 3--5 bullet points in your own words explaining what this paper contributes to the project.  Share these with the team.
+  \item \textbf{For implementation papers} (AS, TRADES, DDIM): try to sketch pseudocode before looking at the algorithms.  The gaps between your sketch and theirs are where the learning happens.
+\end{enumerate}
+
+\end{document}

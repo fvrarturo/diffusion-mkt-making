@@ -1,0 +1,38 @@
+# DDIM sampling for synthetic-day generation.
+# Inherits model/schedule definitions from finetune so the loaded checkpoint
+# matches the architecture that produced it.
+defaults:
+  - finetune
+  - _self_
+
+checkpoint_path: null            # required at runtime: path to a finetune checkpoint
+# Anchor price for decode-time integration of mid_return → absolute mid.
+# null → use NormStats.anchor_mid (training-set median). Override at decode
+# time (no retraining) to generate synthetic tapes at arbitrary price levels,
+# e.g. for presentation of what "toxic at $200 TSLA" would look like.
+anchor_mid_override: null
+# Defaults derived empirically from the diagnose_sampling.py sweep on the first
+# checkpoint (intc_v1_short): n_steps=200 + w=1 keeps samples close to N(0,1)
+# in normalized space. The x0_clip guard prevents catastrophic blow-up at
+# extreme timesteps for under-trained models.
+n_steps: 200
+guidance_weight: 1.0             # 0 = unconditional; sweep {0,1,3} for the evaluation phase
+x0_clip: 4.0                     # null disables; 4.0 is generous for ~N(0,1) data
+eta: 0.0                         # 0 = deterministic DDIM
+window_length: 256
+n_features: 9                    # = len(FEATURE_COLUMNS)
+batch_size: 16                   # batches per regime per seed (sampled in one pass on GPU)
+
+# Output
+output_dir: data/synthetic
+n_samples_per_regime: 100
+regimes: [base, high_vol, toxic, thin]
+ticker: INTC
+
+# Per-regime conditioning vectors (c_vol, c_vpin, c_imb, c_tod) → 4 long ints.
+# c_tod=1 (midday) is a neutral default; can be varied later.
+regime_to_condition:
+  base:     [0, 0, 1, 1]
+  high_vol: [2, 1, 1, 1]
+  toxic:    [2, 2, 1, 1]
+  thin:     [1, 2, 0, 1]

@@ -1,0 +1,222 @@
+\documentclass[10pt,letterpaper,twocolumn]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=0.72in]{geometry}
+\usepackage{microtype}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{abstract}
+\usepackage{titlesec}
+\usepackage{caption}
+\setlength{\columnsep}{0.24in}
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+\hypersetup{colorlinks=true,linkcolor=black,urlcolor=black,citecolor=black}
+
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection.}{0.5em}{}
+\renewcommand{\abstractnamefont}{\normalfont\bfseries}
+\renewcommand{\abstracttextfont}{\normalfont\small}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\OFI}{\mathrm{OFI}}
+\newcommand{\VPIN}{\mathrm{VPIN}}
+\newcommand{\Sharpe}{\mathrm{Sharpe}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\title{\textbf{Stress-Testing High-Frequency Market Makers with Diffusion-Generated Counterfactual Top-of-Book Tapes}}
+\author{Arturo Favara \and Maxime Vallot \and Nick Bernardini}
+\date{15.458 Financial Data Science and Computing \;--\; Spring 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Historical replay backtests only expose a market-making strategy to the regimes that happened to occur in sample. We propose a more informative evaluation framework based on synthetic but data-consistent top-of-book tapes generated from NYSE TAQ data. The idea is to train a compact diffusion model on quote and trade event sequences, sample stress scenarios with elevated volatility or toxicity, and compare whether strategy rankings from these counterfactual scenarios predict held-out real-world rankings better than ordinary historical replay. The project is deliberately scoped around top-of-book data, interpretable quoting agents, and a narrow ranking exercise rather than a full market simulator.
+\end{abstract}
+
+\section{Objective and Hypothesis}
+
+The goal of the project is not to forecast prices or to build a production-grade execution engine. Instead, we want to study whether generative models can improve \emph{evaluation}. In standard historical replay, a strategy is tested only on the realized sequence of events. If the calibration window contains mostly benign days, then strategies are ranked using an environment that may understate the importance of robustness to volatility spikes, toxic flow, or persistent imbalances.
+
+Our central hypothesis is that rankings produced by generated stress scenarios will be more informative than rankings produced by ordinary replay. Let $\pi_{\mathrm{hist}}$ denote the ranking of candidate strategies on historical replay, $\pi_{\mathrm{gen}}$ the ranking under generated stress scenarios, and $\pi_{\mathrm{real}}$ the realized ranking on held-out real days. The main empirical question is whether
+\[
+\rho\!\left(\pi_{\mathrm{gen}},\pi_{\mathrm{real}}\right)
+>
+\rho\!\left(\pi_{\mathrm{hist}},\pi_{\mathrm{real}}\right),
+\]
+where $\rho$ is Spearman rank correlation. A positive result would suggest that synthetic stress testing adds decision-useful information beyond what a standard replay backtest provides.
+
+\section{Project Definition and Why It Is Interesting}
+
+This project sits at the intersection of market microstructure and modern generative modeling. In recent years, diffusion models have become strong tools for generating realistic sequential data. In finance, this opens the possibility of creating counterfactual market scenarios that preserve important empirical structure while moving beyond the narrow set of days observed historically.
+
+For market making, this is especially relevant. A strategy that looks strong in a quiet sample may perform poorly once adverse selection rises or short-horizon volatility increases. At the same time, a robust strategy may look overly conservative in ordinary replay. Our project asks whether a generative model can help surface this distinction by creating plausible stress scenarios and using them as an additional evaluation layer.
+
+The contribution is therefore methodological. We are not claiming to simulate the full market or to replace traditional backtesting. Rather, we want to test whether synthetic counterfactual tapes can improve \emph{relative strategy ranking} in a setting where historical replay is known to be incomplete.
+
+\section{Scope}
+
+The scope is intentionally narrow so that the final result is credible and well executed. We work with NYSE TAQ trade and quote data for one or two liquid names, beginning with INTC and adding TSLA only if the core pipeline is stable. The state is restricted to top-of-book information: best bid and ask prices, best bid and ask sizes, and event timing. This is the level of detail we can defend from the available data.
+
+On the strategy side, we compare a small set of interpretable market-making agents rather than a large model zoo. The baseline is Avellaneda--Stoikov. We then add two controlled extensions: one with order-flow-imbalance skew and one with toxicity-aware spread widening. This keeps the comparison meaningful, because any differences in ranking can be traced back to economically interpretable mechanisms rather than opaque model complexity.
+
+Several elements are explicitly out of scope: full-depth order book reconstruction, precise queue position, exchange-level routing, latency competition, reinforcement learning, and multi-asset hedging. These omissions are deliberate. The project is meant to be a clean empirical study of whether generative stress testing is useful at all in a reduced but defensible top-of-book setting.
+
+\section{Data}
+
+The data source is NYSE Daily TAQ accessed through WRDS. We use NBBO quote updates and consolidated trades during the continuous trading session, excluding the opening and closing auctions. The minimum viable version uses roughly 40 training days, 5 validation days, and 10 holdout days. We will try to choose the holdout so that it contains at least one event-driven day with clearly elevated intraday stress.
+
+Cleaning is an important part of the design because the project relies on fine event-level structure. We remove crossed or locked quotes, non-firm quote updates, and corrected or out-of-sequence trades. We also apply standard trade-signing methods so that buy and sell pressure can be summarized consistently. Since the entire proposal depends on reliable short-horizon structure, we would rather keep a slightly smaller but cleaner sample than maximize coverage with noisier events.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\columnwidth}{@{}lY@{}}
+\toprule
+\textbf{Source} & \textbf{Fields Used} \\
+\midrule
+NBBO quotes & \texttt{BID}, \texttt{OFR}, \texttt{BIDSIZ}, \texttt{OFRSIZ}, \texttt{MODE}, \texttt{EX}, time \\
+Trades & \texttt{PRICE}, \texttt{SIZE}, \texttt{COND}, \texttt{CORR}, \texttt{EX}, time \\
+\bottomrule
+\end{tabularx}
+\caption{Core TAQ fields used in the project.}
+\label{tab:datafields}
+\end{table}
+
+At the event level, the reduced market state is
+\[
+X_t=(p_t^b,p_t^a,q_t^b,q_t^a,\tau_t),
+\]
+where $p_t^b$ and $p_t^a$ are best bid and ask prices, $q_t^b$ and $q_t^a$ are displayed sizes, and $\tau_t$ is event time. The corresponding midprice and spread are
+\[
+m_t=\frac{p_t^a+p_t^b}{2},
+\qquad
+s_t=p_t^a-p_t^b.
+\]
+These are the objects used both by the generator and by the reduced-form execution model.
+
+\section{What We Will Build and Test}
+
+The project has four concrete deliverables. First, we will build a TAQ processing pipeline that converts raw quotes and trades into event tapes and computes regime variables such as realized volatility, imbalance, and toxicity. Second, we will train a compact diffusion model on short windows of these event tapes. Third, we will implement a small family of market-making agents that can be replayed consistently on both real and synthetic tapes. Fourth, we will run a ranking exercise that compares historical replay with generated stress scenarios.
+
+The ranking exercise is the real center of the proposal. For each agent, we will compute performance on ordinary historical replay, performance across many generated stress tapes, and performance on a held-out set of real days. We then ask whether the ordering induced by the synthetic stress scenarios is closer to the held-out ordering than the historical ordering is. This makes the final result easy to explain and directly tied to the proposal's methodological claim.
+
+In practice, we will also inspect several intermediate questions. Does the diffusion model preserve basic stylized facts of the event tape? Can conditioning actually push the generator toward more volatile or more toxic days? Do the three agents separate in meaningful ways under stress, or do they still behave similarly? Even if the final rank-correlation result is noisy, these intermediate outcomes are useful and reportable.
+
+\section{Methods}
+
+The empirical pipeline is straightforward. We begin by cleaning TAQ data and transforming it into short event windows. We then compute regime labels and summary statistics at the day or sub-day level. These regime summaries serve two purposes: they are used to characterize the data economically, and they are also used as conditioning inputs for the generator and decision variables for the agents.
+
+The main features we plan to use are realized volatility, order-flow imbalance, and a VPIN-style toxicity measure. Realized volatility gives a compact description of the day's intensity. Imbalance captures directional pressure at the top of book. VPIN serves as a proxy for whether one side of the market is becoming unusually informed or toxic. Together these are simple enough to compute reliably, but rich enough to define stress dimensions relevant for market making.
+
+A representative short-horizon imbalance statistic is
+\[
+\OFI_t = \Delta q_t^b\,\mathbf{1}_{\{p_t^b\ge p_{t-1}^b\}}
+        - \Delta q_t^a\,\mathbf{1}_{\{p_t^a\le p_{t-1}^a\}},
+\]
+and daily realized volatility is computed from intraday midprice returns as
+\[
+RV_t = \sum_{k=1}^{K_t} r_{t,k}^2.
+\]
+We will not overcomplicate the feature set at proposal stage. The emphasis is on a few interpretable quantities that connect cleanly to both generator conditioning and strategy behavior.
+
+\section{Generative Model}
+
+We model short event windows rather than full-day books. Each event window is a sequence in which every step records inter-event time, bid and ask updates, and displayed sizes at the best quotes. This keeps the state space manageable and fits the top-of-book nature of the data.
+
+The generator is a denoising diffusion probabilistic model with a small transformer denoiser. We use it because it can learn a flexible distribution over event sequences while remaining relatively stable to train. The mathematical structure is standard: a clean sequence is progressively noised, and the neural network is trained to reverse that corruption. In compact notation, the forward process is
+\[
+q(x_t\mid x_0)=\mathcal N\!\left(\sqrt{\bar\alpha_t}x_0,(1-\bar\alpha_t)I\right),
+\]
+and the denoiser is trained by a mean-squared error objective on the injected noise.
+
+Conditioning enters through regime variables such as volatility and VPIN. The idea is not to force the model into unrealistic corners, but to nudge it toward regions of the empirical distribution associated with stress. We will start with unconditional generation as the minimum viable version and add conditional generation only if validation suggests that the model is learning the data distribution well enough to justify it.
+
+\section{Generator Validation}
+
+A synthetic tape is useful only if it preserves the features that matter for the downstream decision problem. We therefore validate the generator on a concise set of stylized facts rather than on purely visual inspection. The relevant diagnostics are return tail behavior, dispersion of inter-event times, short-horizon volatility clustering, and the relationship between order-flow imbalance and short-run price pressure.
+
+This section is important because the project should be honest about what the generator can and cannot do. If the synthetic tapes fail materially on these tests, then the final report should say so and scale back the evaluation claims accordingly. In other words, generator validation is not a cosmetic add-on; it is a formal checkpoint that determines how strongly we can interpret the ranking results.
+
+To keep the proposal grounded, we will compare a small number of summary moments and reduced-form regressions between real and synthetic data, rather than trying to match every microstructure statistic under the sun. The final report will focus on the diagnostics most relevant for the agent comparison.
+
+\section{Market-Making Agents}
+
+The baseline agent is Avellaneda--Stoikov. Conceptually, it balances two forces: earning spread capture and controlling inventory risk. In the model, the reservation price shifts away from the midprice when inventory becomes large, and the optimal quoted spread widens when volatility or risk aversion rises.
+
+In reduced form, if $S_t$ is the midprice, $q_t$ inventory, $\sigma_t$ an intraday volatility estimate, and $\gamma$ risk aversion, the reservation price can be written as
+\[
+r_t = S_t - q_t\gamma\sigma_t^2(T-t).
+\]
+This gives the baseline quoting logic. The first extension adds an imbalance term that tilts quotes in the direction suggested by recent flow. The second widens the spread when toxicity is high. These are deliberately simple modifications, because the point is to compare interpretable market-making styles under identical replay conditions.
+
+We are not trying to prove that these are the best possible strategies. They are controlled baselines whose behavior is well understood. That makes them appropriate for a proposal whose goal is to test an \emph{evaluation method}, not to win a strategy competition.
+
+\section{Execution Model and Performance Measurement}
+
+Because we do not observe full depth or queue position, we cannot pretend to have exact execution realism. Instead, we use a conservative reduced-form fill model tied to whether subsequent trade flow reaches the best bid or ask. The same approximation is applied uniformly across agents and across real versus synthetic tapes. This is important: even if the fill model is simplified, the comparison remains informative as long as it is internally consistent.
+
+Inventory evolves with bid- and ask-side fills, and final performance is evaluated through mark-to-market P\&L over each replayed day. In compact notation,
+\[
+q_{t+1}=q_t+f_t^b-f_t^a,
+\]
+and daily returns are summarized through mean P\&L, inventory risk, adverse-selection indicators, and a simple Sharpe-style statistic
+\[
+\Sharpe = \sqrt{252}\,\frac{\E[R_d]}{\sqrt{\Var(R_d)}}.
+\]
+We do not need a very elaborate performance menu. What matters is that the same metrics are used consistently to produce strategy rankings under each environment.
+
+\section{Evaluation Design}
+
+The final empirical design is intentionally narrow and easy to interpret. We take a small set of candidate agents and rank them in three environments: ordinary historical replay, generated stress scenarios, and held-out real days. We then compare which ranking is closer to the held-out ranking.
+
+This makes the whole project hinge on one transparent question: does generative stress testing contain incremental information for model selection? That is a more defensible claim than saying that synthetic markets are realistic in an absolute sense. Even a modest result here would be interesting, because ranking is often the practical problem a researcher or desk actually faces when comparing strategies with limited historical stress observations.
+
+We will complement the point estimate with bootstrap uncertainty over holdout days and scenario resampling. If the signal is weak, we will say so clearly rather than forcing a strong conclusion from a small sample.
+
+\section{Implementation Plan}
+
+The project is structured in layers so that we can stop at a coherent minimum viable result if needed. The minimum viable version is an unconditional top-of-book diffusion model for INTC, basic generator validation, and a two-agent comparison on historical and synthetic tapes. This already answers the core question in a simplified setting.
+
+The next layer adds conditioning on volatility and toxicity, along with the third agent. If this works, we can meaningfully speak about stress-directed generation rather than generic synthetic replay. The final stretch goal is to add TSLA as a second name and show whether conclusions are robust across a large-tick and a more microstructure-rich asset.
+
+This sequencing matters because it reduces the risk of ending up with an ambitious but incomplete project. Each stage is useful on its own, and each stage produces material that can appear cleanly in the final write-up.
+
+\section{Risks and Fallbacks}
+
+The main risks are easy to identify. First, the generator may not match the event-level structure well enough to support stress testing. Second, conditional generation may not move scenarios strongly enough along the desired regime dimensions. Third, the statistical power of the ranking exercise may be limited by the small number of agents and holdout days.
+
+Each of these risks has a clear fallback interpretation. If realism is weak, that becomes a disciplined negative result about the limits of top-of-book diffusion models for evaluation. If conditional control is weak, we revert to unconditional generation and present the project as a first pass at synthetic replay rather than stress-directed replay. If the rank comparison is noisy, we frame the result as proof of concept and emphasize the pipeline and validation findings.
+
+This is an important part of the proposal. A good final report should still be strong even if the headline result is mixed, and the project is designed with that in mind.
+
+\section{Expected Contribution}
+
+The intended contribution is a clear empirical test of whether modern generative models can improve how market-making strategies are compared. If the result is positive, it supports a broader research direction in which synthetic stress scenarios complement historical replay when data are sparse in the tails. If the result is negative, it still helps clarify an important distinction: matching stylized facts is not the same thing as producing decision-useful synthetic markets.
+
+Either way, the project should produce a useful answer. It will say something concrete about what diffusion-generated event tapes can and cannot do in a realistic, finance-facing evaluation problem.
+
+\section{Selected References}
+
+\begin{enumerate}[leftmargin=1.2em,itemsep=0.2em]
+\item Avellaneda, M., and Stoikov, S. (2008). ``High-frequency trading in a limit order book.'' \emph{Quantitative Finance}.
+\item Berti, L., Prenkaj, B., and Velardi, P. (2025). ``TRADES: Generating Realistic Market Simulations with Diffusion Models.'' arXiv preprint.
+\item Cont, R., Kukanov, A., and Stoikov, S. (2014). ``The price impact of order book events.'' \emph{Journal of Financial Econometrics}.
+\item Easley, D., L\'opez de Prado, M., and O'Hara, M. (2012). ``Flow toxicity and liquidity in a high-frequency world.'' \emph{Review of Financial Studies}.
+\item Ho, J., Jain, A., and Abbeel, P. (2020). ``Denoising diffusion probabilistic models.'' \emph{NeurIPS}.
+\item Ho, J., and Salimans, T. (2022). ``Classifier-free diffusion guidance.'' arXiv preprint.
+\item Lee, C., and Ready, M. (1991). ``Inferring trade direction from intraday data.'' \emph{Journal of Finance}.
+\item Song, J., Meng, C., and Ermon, S. (2021). ``Denoising diffusion implicit models.'' \emph{ICLR}.
+\end{enumerate}
+
+\end{document}

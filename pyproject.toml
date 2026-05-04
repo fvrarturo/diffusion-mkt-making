@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diffmm"
+version = "0.1.0"
+description = "Stress-Testing High-Frequency Market Makers with Diffusion-Generated Counterfactual LOBs"
+authors = [
+    {name = "Arturo Favara"},
+    {name = "Nick Bernardini"},
+    {name = "Maxime Vallot"},
+]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "polars>=0.20",
+    "pyarrow>=15",
+    "scipy>=1.11",
+    "scikit-learn>=1.4",
+    "statsmodels>=0.14",
+    "torch>=2.2",
+    "pytorch-lightning>=2.2",
+    "diffusers>=0.27",
+    "einops>=0.7",
+    "hydra-core>=1.3",
+    "omegaconf>=2.3",
+    "wandb>=0.16",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "ruff>=0.3",
+    "mypy>=1.8",
+    "ipykernel>=6.29",
+    "jupyter>=1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]  # line length already enforced by formatter
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
