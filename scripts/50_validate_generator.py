@@ -186,19 +186,35 @@ def _run_part_D(real_per_day, synth_per_tape, out_dir: Path) -> dict:
     return out
 
 
+def _load_normalizer(args):
+    """Returns either NormStats or CopulaTransform based on --use-copula.
+    Both expose .normalize() / .denormalize() / .anchor_mid duck-typed interface."""
+    from diffmm.data.dataset import NormStats
+    if args.use_copula:
+        from diffmm.data.copula_transform import CopulaTransform
+        copula_path = (
+            Path(args.copula_path) if args.copula_path
+            else Path(args.norm_stats).with_suffix(".copula.json")
+        )
+        log.info("loading CopulaTransform from %s", copula_path)
+        return CopulaTransform.load(copula_path)
+    return NormStats.load(args.norm_stats)
+
+
 def _run_part_E(args, generator, schedule, real_per_day, out_dir: Path) -> dict:
     log.info("=== Part E — Training diagnostics ===")
     from diffmm.eval import model_diagnostics
     from diffmm.data.dataset import LOBWindowDataset, NormStats, FEATURE_COLUMNS
 
-    # Convert real tapes to NORMALIZED (L, F) windows for model evaluation
+    # Convert real tapes to NORMALIZED (L, F) windows for model evaluation.
+    # `.normalize()` dispatches through the duck-typed normalizer interface
+    # so this works for both NormStats (z-score) and CopulaTransform (CDF).
     log.info("E.0 building val window pool")
-    norm = NormStats.load(args.norm_stats)
+    norm = _load_normalizer(args)
     val_windows = []
     for d in real_per_day:
         feats = d.select(FEATURE_COLUMNS).fill_null(0.0).to_numpy().astype(np.float32)
-        feats_norm = (feats - norm.mean) / (norm.std + 1e-8)
-        # Cut into 256-event chunks
+        feats_norm = norm.normalize(feats).astype(np.float32)
         n_chunks = feats_norm.shape[0] // 256
         for k in range(n_chunks):
             val_windows.append(feats_norm[k * 256: (k + 1) * 256])
@@ -243,7 +259,7 @@ def _run_part_E(args, generator, schedule, real_per_day, out_dir: Path) -> dict:
     out["ptm"] = ptm_v2
 
     log.info("E.3 x0_clip activation rate")
-    norm = NormStats.load(args.norm_stats)
+    norm = _load_normalizer(args)
     clip_v2 = model_diagnostics.x0_clip_activation(generator, schedule, norm,
                                                      n_seeds=args.n_seeds_clip,
                                                      device=args.device)
@@ -289,7 +305,7 @@ def _run_part_F(args, generator, schedule, real_per_day, out_dir: Path) -> dict:
     film.table.to_csv(out_dir / "F2_film_modulation.csv", index=False)
 
     log.info("F.3 attention maps")
-    norm = NormStats.load(args.norm_stats)
+    norm = _load_normalizer(args)
     # Pick three real windows from each regime, take the first 256 events
     windows_by_label: dict[str, np.ndarray] = {}
     for label in ("base", "high_vol", "toxic"):
@@ -297,7 +313,7 @@ def _run_part_F(args, generator, schedule, real_per_day, out_dir: Path) -> dict:
             sub = d.filter(pl.col("regime_label") == label)
             if sub.height >= 256:
                 feats = sub.select(FEATURE_COLUMNS).fill_null(0.0).to_numpy().astype(np.float32)
-                feats_norm = (feats - norm.mean) / (norm.std + 1e-8)
+                feats_norm = norm.normalize(feats).astype(np.float32)
                 windows_by_label[label] = feats_norm[:256]
                 break
     if windows_by_label:
@@ -320,7 +336,7 @@ def _run_part_F(args, generator, schedule, real_per_day, out_dir: Path) -> dict:
     val_windows = []
     for d in real_per_day:
         feats = d.select(FEATURE_COLUMNS).fill_null(0.0).to_numpy().astype(np.float32)
-        feats_norm = (feats - norm.mean) / (norm.std + 1e-8)
+        feats_norm = norm.normalize(feats).astype(np.float32)
         n_chunks = feats_norm.shape[0] // 256
         for k in range(n_chunks):
             val_windows.append(feats_norm[k * 256: (k + 1) * 256])
@@ -368,6 +384,12 @@ def main():
                          "the model is built via build_edm_generator and Part E.2 "
                          "uses σ-based per-timestep MSE.")
     ap.add_argument("--edm-sigma-data", type=float, default=0.5)
+    ap.add_argument("--use-copula", action="store_true",
+                    help="Phase E / v8+: load CopulaTransform instead of NormStats. "
+                         "Required for checkpoints trained with copula.enabled=true. "
+                         "Part E and F functions still work because the model is built "
+                         "the same way (only the normalizer differs).")
+    ap.add_argument("--copula-path", default=None)
     args = ap.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)

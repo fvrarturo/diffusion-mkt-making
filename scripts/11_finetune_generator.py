@@ -81,17 +81,46 @@ def main(cfg: DictConfig) -> None:
             )
         log.info("found %d train tapes, %d val tapes", len(train_paths), len(val_paths))
 
-        norm_path = Path(cfg.data.norm_stats_file)
-        if norm_path.exists():
-            norm = NormStats.load(norm_path)
-            log.info("loaded norm stats from %s", norm_path)
+        copula_cfg = cfg.generator.get("copula", None)
+        use_copula = bool(copula_cfg is not None and copula_cfg.get("enabled", False))
+
+        if use_copula:
+            # Phase E (v8) — train on Gaussianized data via empirical-CDF transform.
+            from diffmm.data.copula_transform import CopulaTransform
+            copula_path = Path(cfg.data.norm_stats_file).with_suffix(".copula.json")
+            if copula_path.exists():
+                norm = CopulaTransform.load(copula_path)
+                log.info("loaded copula transform from %s", copula_path)
+            else:
+                log.info("fitting copula transform on training tapes (%d files)", len(train_paths))
+                t0 = time.time()
+                discrete = copula_cfg.get("discrete_features", None)
+                if discrete is not None:
+                    discrete = tuple(discrete)
+                norm = CopulaTransform.fit(
+                    train_paths,
+                    discrete_features=discrete,
+                    clip_quantile=float(copula_cfg.get("clip_quantile", 0.001)),
+                    max_samples_per_feature=int(copula_cfg.get("max_samples_per_feature", 5_000_000)),
+                )
+                norm.save(copula_path)
+                log.info(
+                    "fit copula in %.1fs → %s  (discrete_features=%s, clip=%g)",
+                    time.time() - t0, copula_path,
+                    norm.discrete_features, norm.clip_quantile,
+                )
         else:
-            log.info("computing norm stats on training tapes (%d files)", len(train_paths))
-            from diffmm.data.dataset import compute_norm_stats
-            t0 = time.time()
-            norm = compute_norm_stats(train_paths)
-            norm.save(norm_path)
-            log.info("computed norm stats in %.1fs → %s", time.time() - t0, norm_path)
+            norm_path = Path(cfg.data.norm_stats_file)
+            if norm_path.exists():
+                norm = NormStats.load(norm_path)
+                log.info("loaded norm stats from %s", norm_path)
+            else:
+                log.info("computing norm stats on training tapes (%d files)", len(train_paths))
+                from diffmm.data.dataset import compute_norm_stats
+                t0 = time.time()
+                norm = compute_norm_stats(train_paths)
+                norm.save(norm_path)
+                log.info("computed norm stats in %.1fs → %s", time.time() - t0, norm_path)
 
         log.info("loading %d train tapes into memory", len(train_paths))
         t0 = time.time()

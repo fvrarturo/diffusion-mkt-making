@@ -816,3 +816,281 @@ def test_per_timestep_mse_handles_edm_schedule():
     # The Min-SNR weight column is replaced by EDM's λ(σ); should also be finite + positive
     assert np.isfinite(res.min_snr_weight).all()
     assert (res.min_snr_weight > 0).all()
+
+
+# ─── Phase E — CopulaTransform (v8) ────────────────────────────────────
+
+def _make_synthetic_tape_for_copula(n_events: int = 5000, seed: int = 0) -> np.ndarray:
+    """Heavy-tailed multivariate sample with one discrete feature, for copula tests."""
+    rng = np.random.default_rng(seed)
+    # 8 features matching FEATURE_COLUMNS shape:
+    # 0,1: bid_dist, ask_dist (continuous, bounded near zero)
+    # 2,3: bid_sz, ask_sz (continuous, positive heavy-tailed)
+    # 4: trade_dist (continuous)
+    # 5: trade_sz (continuous heavy-tailed)
+    # 6: trade_sign (discrete: -1, 0, +1)
+    # 7: mid_return (continuous heavy-tailed; Student-t)
+    arr = np.zeros((n_events, 8), dtype=np.float32)
+    arr[:, 0] = rng.normal(-0.005, 0.001, n_events)         # bid_dist
+    arr[:, 1] = rng.normal(0.005, 0.001, n_events)          # ask_dist
+    arr[:, 2] = rng.exponential(500, n_events)              # bid_sz
+    arr[:, 3] = rng.exponential(500, n_events)              # ask_sz
+    arr[:, 4] = rng.normal(0, 0.001, n_events)              # trade_dist
+    arr[:, 5] = rng.exponential(100, n_events)              # trade_sz
+    arr[:, 6] = rng.choice([-1, 0, 1], n_events)            # trade_sign (DISCRETE)
+    # mid_return: Student-t for heavy tails (kurtosis ≫ 3)
+    arr[:, 7] = rng.standard_t(df=3, size=n_events) * 1e-5
+    return arr
+
+
+def test_copula_transform_round_trip_continuous_features():
+    """forward + inverse should approximately recover the input for continuous features
+    (with quantile bin granularity error)."""
+    import numpy as np
+    from diffmm.data.copula_transform import CopulaTransform
+
+    arr = _make_synthetic_tape_for_copula(n_events=3000)
+    # Save to a temp parquet so CopulaTransform.fit can read it
+    import tempfile, polars as pl
+    from diffmm.data.dataset import FEATURE_COLUMNS
+    from diffmm.io import schema as sm
+
+    with tempfile.TemporaryDirectory() as td:
+        # Mock-fit: bypass parquet by directly building the CopulaTransform from the array
+        # (testing the math, not the file IO)
+        ct = CopulaTransform(
+            ecdf_quantiles={
+                j: np.sort(arr[:, j].astype(np.float64))
+                for j in range(8) if j != 6   # skip discrete
+            },
+            mean=arr.mean(axis=0).astype(np.float32),
+            std=arr.std(axis=0).astype(np.float32),
+            feature_columns=FEATURE_COLUMNS,
+            discrete_features=(6,),    # trade_sign
+            anchor_mid=30.0,
+            clip_quantile=0.001,
+        )
+
+        z = ct.normalize(arr)
+        x_hat = ct.denormalize(z)
+
+        # Continuous features: round-trip should be tight
+        for j in [0, 1, 2, 3, 4, 5, 7]:
+            err = np.median(np.abs(x_hat[:, j] - arr[:, j]))
+            scale = np.std(arr[:, j])
+            assert err < scale * 0.05, (
+                f"feature {j}: median round-trip err {err:.4g} too large "
+                f"(>5% of scale {scale:.4g})"
+            )
+
+
+def test_copula_transform_produces_gaussian_marginals():
+    """forward pass should produce marginals that are approximately N(0,1) per feature."""
+    import numpy as np
+    from scipy import stats as sps
+    from diffmm.data.copula_transform import CopulaTransform
+    from diffmm.data.dataset import FEATURE_COLUMNS
+
+    arr = _make_synthetic_tape_for_copula(n_events=5000)
+    ct = CopulaTransform(
+        ecdf_quantiles={j: np.sort(arr[:, j].astype(np.float64))
+                        for j in range(8) if j != 6},
+        mean=arr.mean(axis=0).astype(np.float32),
+        std=arr.std(axis=0).astype(np.float32),
+        feature_columns=FEATURE_COLUMNS,
+        discrete_features=(6,),
+        anchor_mid=30.0,
+    )
+    z = ct.normalize(arr)
+    # Continuous features: marginal mean ~0, std ~1
+    for j in [0, 1, 2, 3, 4, 5, 7]:
+        assert abs(z[:, j].mean()) < 0.1, f"feature {j} mean {z[:, j].mean():.3f} not ~0"
+        assert 0.85 < z[:, j].std() < 1.15, f"feature {j} std {z[:, j].std():.3f} not ~1"
+
+
+def test_copula_transform_discrete_feature_passthrough():
+    """Discrete features should use z-score (mean-shift + scale), not CDF transform."""
+    import numpy as np
+    from diffmm.data.copula_transform import CopulaTransform
+    from diffmm.data.dataset import FEATURE_COLUMNS
+
+    arr = _make_synthetic_tape_for_copula(n_events=2000)
+    ct = CopulaTransform(
+        ecdf_quantiles={j: np.sort(arr[:, j].astype(np.float64))
+                        for j in range(8) if j != 6},
+        mean=arr.mean(axis=0).astype(np.float32),
+        std=arr.std(axis=0).astype(np.float32),
+        feature_columns=FEATURE_COLUMNS,
+        discrete_features=(6,),
+        anchor_mid=30.0,
+    )
+    z = ct.normalize(arr)
+    # Discrete feature 6 (trade_sign): z-scored, only 3 unique values map to 3 z-values
+    unique_z = np.unique(z[:, 6])
+    assert len(unique_z) <= 3, f"discrete feature should keep ≤3 unique values, got {len(unique_z)}"
+    # Round-trip exactly recovers the originals
+    x_hat = ct.denormalize(z)
+    np.testing.assert_allclose(x_hat[:, 6], arr[:, 6], atol=1e-5)
+
+
+def test_copula_transform_preserves_rank_correlation():
+    """The key claim: per-feature monotone transform preserves rank correlations."""
+    import numpy as np
+    from scipy.stats import spearmanr
+    from diffmm.data.copula_transform import CopulaTransform
+    from diffmm.data.dataset import FEATURE_COLUMNS
+
+    rng = np.random.default_rng(0)
+    n = 3000
+    # Construct two correlated heavy-tailed features
+    z1 = rng.standard_t(3, n)
+    z2 = 0.7 * z1 + 0.3 * rng.standard_t(3, n)        # strongly correlated
+    # Build a 8-feature array: two correlated, six padding
+    arr = np.column_stack([z1, z2] + [rng.normal(size=n) for _ in range(6)]).astype(np.float32)
+
+    ct = CopulaTransform(
+        ecdf_quantiles={j: np.sort(arr[:, j].astype(np.float64)) for j in range(8)},
+        mean=arr.mean(axis=0).astype(np.float32),
+        std=arr.std(axis=0).astype(np.float32),
+        feature_columns=FEATURE_COLUMNS,
+        discrete_features=(),
+        anchor_mid=30.0,
+    )
+    rho_orig = spearmanr(arr[:, 0], arr[:, 1]).statistic
+    z = ct.normalize(arr)
+    rho_gauss = spearmanr(z[:, 0], z[:, 1]).statistic
+    # Spearman rank correlation is invariant under monotone transforms — should be IDENTICAL
+    assert abs(rho_gauss - rho_orig) < 0.01, (
+        f"Spearman rho changed under CDF transform: {rho_orig:.4f} → {rho_gauss:.4f}"
+    )
+
+
+def test_copula_transform_recovers_kurtosis_after_inverse():
+    """Inverse transform should restore the original heavy-tailed kurtosis."""
+    import numpy as np
+    from scipy.stats import kurtosis
+    from diffmm.data.copula_transform import CopulaTransform
+    from diffmm.data.dataset import FEATURE_COLUMNS
+
+    rng = np.random.default_rng(0)
+    # Heavy-tailed Student-t feature
+    arr = np.zeros((5000, 8), dtype=np.float32)
+    arr[:, 0] = rng.standard_t(df=2, size=5000)   # high kurtosis
+    for j in range(1, 8):
+        arr[:, j] = rng.normal(size=5000)
+
+    ct = CopulaTransform(
+        ecdf_quantiles={j: np.sort(arr[:, j].astype(np.float64)) for j in range(8)},
+        mean=arr.mean(axis=0).astype(np.float32),
+        std=arr.std(axis=0).astype(np.float32),
+        feature_columns=FEATURE_COLUMNS,
+        discrete_features=(),
+        anchor_mid=30.0,
+    )
+    real_kurt = kurtosis(arr[:, 0])
+
+    # Simulate "diffusion sampled in z-space" with N(0,1) draws
+    z_samples = rng.normal(size=(5000, 8)).astype(np.float32)
+    x_samples = ct.denormalize(z_samples)
+    sampled_kurt = kurtosis(x_samples[:, 0])
+
+    # The inverse CDF restores the original distribution shape — kurtosis should be close
+    # (within sampling noise; CDF-recovered kurtosis converges to true kurtosis with N).
+    assert abs(sampled_kurt - real_kurt) / max(abs(real_kurt), 1) < 0.5, (
+        f"sampled kurtosis {sampled_kurt:.2f} too far from real {real_kurt:.2f}"
+    )
+
+
+def test_copula_transform_save_load_round_trip():
+    """save() / load() preserves the transform exactly."""
+    import numpy as np, tempfile, os
+    from diffmm.data.copula_transform import CopulaTransform
+    from diffmm.data.dataset import FEATURE_COLUMNS
+
+    arr = _make_synthetic_tape_for_copula(n_events=1000)
+    ct = CopulaTransform(
+        ecdf_quantiles={j: np.sort(arr[:, j].astype(np.float64))
+                        for j in range(8) if j != 6},
+        mean=arr.mean(axis=0).astype(np.float32),
+        std=arr.std(axis=0).astype(np.float32),
+        feature_columns=FEATURE_COLUMNS,
+        discrete_features=(6,),
+        anchor_mid=30.123,
+        clip_quantile=0.002,
+    )
+    with tempfile.TemporaryDirectory() as td:
+        save_path = os.path.join(td, "copula.json")
+        ct.save(save_path)
+        ct2 = CopulaTransform.load(save_path)
+    assert ct2.discrete_features == ct.discrete_features
+    assert abs(ct2.anchor_mid - ct.anchor_mid) < 1e-6
+    assert ct2.clip_quantile == ct.clip_quantile
+    np.testing.assert_allclose(ct2.mean, ct.mean)
+    np.testing.assert_allclose(ct2.std, ct.std)
+    # ECDF arrays equal
+    for j in ct.ecdf_quantiles:
+        np.testing.assert_allclose(ct2.ecdf_quantiles[j], ct.ecdf_quantiles[j])
+    # Forward identity check
+    z1 = ct.normalize(arr)
+    z2 = ct2.normalize(arr)
+    np.testing.assert_allclose(z1, z2)
+
+
+def test_copula_transform_drop_in_for_normstats_in_dataset():
+    """LOBWindowDataset should accept either NormStats or CopulaTransform via the
+    duck-typed .normalize() interface."""
+    import numpy as np, tempfile, os, polars as pl
+    from diffmm.data.copula_transform import CopulaTransform
+    from diffmm.data.dataset import LOBWindowDataset, FEATURE_COLUMNS, CONDITION_COLUMNS
+    from diffmm.io import schema as sm
+
+    # Build a minimal valid tape parquet for the dataset to read
+    rng = np.random.default_rng(0)
+    n = 1000
+    arr = _make_synthetic_tape_for_copula(n_events=n)
+    df_dict = {col: arr[:, i] for i, col in enumerate(FEATURE_COLUMNS)}
+    df_dict.update({col: rng.integers(0, 3, n).astype(np.int64) for col in CONDITION_COLUMNS})
+    df_dict["event_idx"] = np.arange(n, dtype=np.int64)
+    df_dict["ts_ns"] = (1_700_000_000_000_000_000 + np.arange(n, dtype=np.int64) * 100_000_000)
+    df_dict["ticker"] = ["INTC"] * n
+    df_dict["event_type"] = ["quote_update"] * n
+    df_dict["bid_px"] = np.full(n, 30.0)
+    df_dict["ask_px"] = np.full(n, 30.01)
+    df_dict["bid_sz"] = arr[:, 2].astype(np.int64)
+    df_dict["ask_sz"] = arr[:, 3].astype(np.int64)
+    df_dict["trade_px"] = [None] * n
+    df_dict["trade_sz"] = [None] * n
+    df_dict["trade_sign"] = [None] * n
+    df_dict["is_lit"] = [None] * n
+    df_dict["mid"] = np.full(n, 30.005)
+    df_dict["spread"] = np.full(n, 0.01)
+    df_dict["c_vol"] = df_dict["c_vol"].astype(np.int8)
+    df_dict["c_vpin"] = df_dict["c_vpin"].astype(np.int8)
+    df_dict["c_imb"] = df_dict["c_imb"].astype(np.int8)
+    df_dict["c_tod"] = df_dict["c_tod"].astype(np.int8)
+    df_dict["regime_label"] = ["base"] * n
+    df = pl.DataFrame(df_dict, schema_overrides=sm.CORE_DTYPES)
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "INTC_20240101.parquet")
+        df.write_parquet(path)
+
+        ct = CopulaTransform(
+            ecdf_quantiles={j: np.sort(arr[:, j].astype(np.float64))
+                            for j in range(8) if j != 6},
+            mean=arr.mean(axis=0).astype(np.float32),
+            std=arr.std(axis=0).astype(np.float32),
+            feature_columns=FEATURE_COLUMNS,
+            discrete_features=(6,),
+            anchor_mid=30.0,
+        )
+        # Should NOT raise
+        ds = LOBWindowDataset([path], window_length=64, stride=64, norm_stats=ct,
+                                validate_schema=False)
+        assert len(ds) > 0
+        x, c = ds[0]
+        assert x.shape == (64, 8)
+        # Output should be ~Gaussian per feature (continuous)
+        for j in [0, 1, 7]:
+            assert abs(x[:, j].mean().item()) < 1.0
+            assert x[:, j].std().item() < 3.0   # within reasonable Gaussian range

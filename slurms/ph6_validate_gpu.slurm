@@ -40,12 +40,14 @@ PREDICTION_TYPE="${PREDICTION_TYPE:-eps}"        # v4+ Phase B = "v"; v2/v3/v3.5
 CONDITIONING_TYPE="${CONDITIONING_TYPE:-film}"   # v5+ Phase C = "adaln_zero"; v2-v4 = "film"
 USE_EDM="${USE_EDM:-0}"                          # v6+ Phase D = "1"; v2-v5 = "0"
 EDM_SIGMA_DATA="${EDM_SIGMA_DATA:-0.5}"
+USE_COPULA="${USE_COPULA:-0}"                    # v8+ Phase E = "1"; v2-v7 = "0"
 
 OPT_FLAGS=""
 [[ -n "${V1_CKPT:-}" ]] && OPT_FLAGS="$OPT_FLAGS --v1-checkpoint $V1_CKPT"
 [[ -n "${V1_LOG:-}"  ]] && OPT_FLAGS="$OPT_FLAGS --v1-log $V1_LOG"
 [[ -n "${V2_LOG:-}"  ]] && OPT_FLAGS="$OPT_FLAGS --v2-log $V2_LOG"
 [[ "$USE_EDM" == "1" ]] && OPT_FLAGS="$OPT_FLAGS --use-edm --edm-sigma-data $EDM_SIGMA_DATA"
+[[ "$USE_COPULA" == "1" ]] && OPT_FLAGS="$OPT_FLAGS --use-copula"
 
 python scripts/50_validate_generator.py \
     --parts E F \

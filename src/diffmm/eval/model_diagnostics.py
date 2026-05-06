@@ -197,7 +197,16 @@ def x0_clip_activation(
     n_features: int = 8,
     device: str = "cuda",
 ) -> ClipActivationResult:
-    """Run reverse DDIM, count how often |x0_pred| > x0_clip per step."""
+    """Run reverse DDIM, count how often |x0_pred| > x0_clip per step.
+
+    Skipped for EDM checkpoints (they don't use x0_clip — preconditioning
+    bounds outputs naturally). Returns an empty result so the caller can
+    log the skip and move on.
+    """
+    if not hasattr(schedule, "alphas_cumprod"):
+        return ClipActivationResult(
+            per_step_rate=np.zeros(n_steps), overall_rate=0.0,
+        )
     a_bar = schedule.alphas_cumprod.to(device)
     T = a_bar.shape[0]
     timesteps = torch.linspace(T - 1, 0, n_steps + 1, dtype=torch.long, device=device)
@@ -243,6 +252,25 @@ class NoiseScheduleResult:
 
 
 def noise_schedule_curves(schedule) -> NoiseScheduleResult:
+    """For DDPM/DDIM: tabulate ᾱ_t and SNR(t) over the integer-t schedule.
+    For EDM: tabulate σ_i and SNR(σ_i) = (σ_data/σ_i)² over the σ schedule
+    (mapped onto a synthetic t-axis for plot compatibility).
+    """
+    if hasattr(schedule, "sigma_data") and hasattr(schedule, "get_sigmas"):
+        # EDM path. Use the standard 32-step σ schedule for plotting.
+        sigmas = schedule.get_sigmas(n_steps=32, device="cpu")[:-1].numpy()
+        # Map σ → "virtual α_bar" for table compatibility:
+        #   In EDM, SNR(σ) = σ_data² / σ². Define ᾱ-equivalent = SNR/(SNR+1).
+        snr = (schedule.sigma_data / sigmas) ** 2
+        alpha_bar = snr / (snr + 1.0)
+        t = np.arange(len(alpha_bar))
+        return NoiseScheduleResult(
+            t=t,
+            alpha_bar=alpha_bar,
+            sqrt_alpha_bar=np.sqrt(alpha_bar),
+            sqrt_one_minus_alpha_bar=np.sqrt(np.maximum(1 - alpha_bar, 0)),
+            snr=snr,
+        )
     a_bar = schedule.alphas_cumprod.cpu().numpy()
     t = np.arange(len(a_bar))
     return NoiseScheduleResult(
@@ -482,13 +510,25 @@ def film_modulation_magnitude(
                 row[f"{name}_beta_norm"] = float(beta.norm())
         return row
 
+    # EDM-wrapped denoisers have a `.inner` attribute (the underlying TRADES
+    # denoiser). For EDM, `predict_noise`'s second arg is interpreted as σ,
+    # not as integer timestep — and σ=0 sends c_noise = log(0)/4 → −∞,
+    # corrupting all downstream activations into NaN. Detect EDM and pass
+    # σ ≈ 0.3 (the median training σ from log-normal P_mean=-1.2) instead.
+    is_edm = hasattr(generator.denoiser, "inner")
+
+    def _make_t_arg() -> torch.Tensor:
+        if is_edm:
+            return torch.full((1,), 0.30, dtype=torch.float32, device=device)
+        return torch.zeros(1, dtype=torch.long, device=device)
+
     rows = []
     try:
         for regime, cond_vec in regime_to_condition.items():
             captured.clear()
             cond = torch.tensor([cond_vec], dtype=torch.long, device=device)
             x = torch.zeros((1, seq_len, generator.denoiser.n_features), device=device)
-            t = torch.zeros(1, dtype=torch.long, device=device)
+            t = _make_t_arg()
             with torch.no_grad():
                 generator.predict_noise(x, t, cond)
             rows.append(_row_from_capture(regime))
@@ -497,7 +537,7 @@ def film_modulation_magnitude(
         cond_null = generator.regime_embed.null_condition(1, device)
         x = torch.zeros((1, seq_len, generator.denoiser.n_features), device=device)
         with torch.no_grad():
-            generator.predict_noise(x, torch.zeros(1, dtype=torch.long, device=device), cond_null)
+            generator.predict_noise(x, _make_t_arg(), cond_null)
         rows.append(_row_from_capture("null"))
     finally:
         for h in handles:
@@ -529,6 +569,13 @@ def attention_maps(
     """
     from einops import rearrange
     denoiser = generator.denoiser
+    # EDM-wrapped models: unwrap to the inner TradesStyleDenoiser. The EDM
+    # preconditioning math doesn't affect the attention pattern itself
+    # (preconditioning only rescales x and the noise embedding); we still
+    # extract attention from block 0 of the inner denoiser.
+    is_edm = hasattr(denoiser, "inner")
+    if is_edm:
+        denoiser = denoiser.inner
     is_adaln = hasattr(denoiser, "adaln_blocks")
 
     if is_adaln:
@@ -609,10 +656,19 @@ def guidance_sweep(
     seq_len: int = 256,
     device: str = "cuda",
 ) -> GuidanceSweepResult:
-    """Sample 50 windows at each w, decode, compute regime statistics."""
-    from ..generator.sample import ddim_sample
+    """Sample 50 windows at each w, decode, compute regime statistics.
+
+    Auto-detects DDIM vs EDM via the schedule type and uses the appropriate
+    sampler. Output table is the same shape regardless of sampler.
+    """
     from ..generator.decode import decode_window_to_dataframe
     from ..data.dataset import N_FEATURES
+
+    is_edm = hasattr(schedule, "sigma_data") and hasattr(schedule, "get_sigmas")
+    if is_edm:
+        from ..generator.edm import edm_sample
+    else:
+        from ..generator.sample import ddim_sample
 
     # Real targets: aggregate over real-day events partitioned to this regime
     target_stats = {}
@@ -634,19 +690,33 @@ def guidance_sweep(
         for seed in range(n_seeds):
             cond = torch.tensor([cond_vec], dtype=torch.long, device=device)
             null = generator.regime_embed.null_condition(1, device)
-            x = ddim_sample(
-                eps_theta=generator.predict_noise,
-                shape=(1, seq_len, N_FEATURES),
-                schedule=schedule,
-                condition=cond,
-                null_condition=null,
-                guidance_weight=float(w),
-                n_steps=200,
-                device=device,
-                seed=seed,
-                eta=0.0,
-                x0_clip=4.0,
-            )
+            if is_edm:
+                x = edm_sample(
+                    predict_x0=generator.predict_noise,
+                    shape=(1, seq_len, N_FEATURES),
+                    schedule=schedule,
+                    condition=cond,
+                    null_condition=null,
+                    guidance_weight=float(w),
+                    n_steps=50,
+                    device=device,
+                    seed=seed,
+                    second_order=True,
+                )
+            else:
+                x = ddim_sample(
+                    eps_theta=generator.predict_noise,
+                    shape=(1, seq_len, N_FEATURES),
+                    schedule=schedule,
+                    condition=cond,
+                    null_condition=null,
+                    guidance_weight=float(w),
+                    n_steps=200,
+                    device=device,
+                    seed=seed,
+                    eta=0.0,
+                    x0_clip=4.0,
+                )
             df = decode_window_to_dataframe(
                 x[0],
                 condition=cond[0],
@@ -690,9 +760,14 @@ def per_feature_mse(
     device: str = "cuda",
     feature_names: list[str] | None = None,
 ) -> PerFeatureMSEResult:
-    """At a fixed timestep t, MSE per feature channel averaged over n_samples."""
+    """At a fixed noise level, MSE per feature channel averaged over n_samples.
+
+    DDIM/DDPM: noise level is integer timestep t (default 300, mid-range).
+    EDM: noise level is σ ≈ exp(P_mean) ≈ 0.30 (the median training σ).
+    EDM model is x_0-parameterized so target is x_0 itself.
+    """
     rng = np.random.default_rng(0)
-    a_bar = schedule.alphas_cumprod.to(device)
+    is_edm = hasattr(schedule, "sigma_data") and hasattr(schedule, "get_sigmas")
     if not val_windows:
         n_features = generator.denoiser.n_features
         return PerFeatureMSEResult(
@@ -707,15 +782,27 @@ def per_feature_mse(
     x0 = torch.from_numpy(stacked[idx].astype(np.float32)).to(device)
     B = x0.shape[0]
     cond = torch.tensor([[0, 0, 1, 1]] * B, dtype=torch.long, device=device)
-    t_tensor = torch.full((B,), int(t), dtype=torch.long, device=device)
-    a_t = a_bar[t]
     eps_true = torch.randn_like(x0)
-    x_t = torch.sqrt(a_t) * x0 + torch.sqrt(1 - a_t) * eps_true
+
+    if is_edm:
+        sigma = torch.full((B,), 0.30, device=device)         # median EDM σ
+        sigma_view = sigma.view(B, *([1] * (x0.dim() - 1)))
+        x_t = x0 + sigma_view * eps_true
+    else:
+        a_bar = schedule.alphas_cumprod.to(device)
+        t_tensor = torch.full((B,), int(t), dtype=torch.long, device=device)
+        a_t = a_bar[t]
+        x_t = torch.sqrt(a_t) * x0 + torch.sqrt(1 - a_t) * eps_true
 
     generator.eval()
     with torch.no_grad():
-        eps_pred = generator.predict_noise(x_t, t_tensor, cond)
-    mse = ((eps_pred - eps_true) ** 2).mean(dim=(0, 1)).cpu().numpy()    # (F,)
+        if is_edm:
+            pred = generator.predict_noise(x_t, sigma, cond)   # x_0_pred
+            target = x0
+        else:
+            pred = generator.predict_noise(x_t, t_tensor, cond)
+            target = eps_true
+    mse = ((pred - target) ** 2).mean(dim=(0, 1)).cpu().numpy()    # (F,)
 
     return PerFeatureMSEResult(
         feature_names=feature_names or [f"f{i}" for i in range(F)],

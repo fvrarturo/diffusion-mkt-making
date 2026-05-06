@@ -12,12 +12,7 @@ model:
   # variants v2-v4 vs target 5%).
   # Pre-Phase C (v2-v4): "film" — TRADES-style FiLM at start/end. Default for
   # backwards compat with prior checkpoints.
-  # Phase E (v8): use "film" — v2's FiLM uniquely preserved OFI→return
-  # correlation; the marginals-vs-joints finding (Work6_FINAL §9) suggests
-  # AdaLN's extra capacity helps marginals but hurts joints. With copula
-  # transform handling marginals, FiLM's joint-preserving conditioning is
-  # the right architecture.
-  conditioning_type: "film"
+  conditioning_type: "adaln_zero"
 
 schedule:
   type: cosine                     # cosine | linear
@@ -31,12 +26,7 @@ schedule:
   # NOTE: when generator.edm.enabled is true (Phase D / v6+), this field is
   # ignored — EDM uses its own σ-spaced schedule and x_0-prediction with
   # preconditioning instead.
-  # Phase E (v8): use "eps" — copula-Gaussianized data has ~N(0,1) marginals
-  # by construction, so v-prediction's signal-correlated target at low t
-  # offers no benefit (no extreme values to commit to). ε-prediction's
-  # mode-covering behavior is exactly what we want for joint-structure
-  # preservation. See Work6_FINAL §9.
-  prediction_type: "eps"
+  prediction_type: "v"
 
 # Phase D (v6+) — EDM training & sampling (Karras et al. 2022). When
 # enabled=true, the trainer uses EDMTrainer + the σ-weighted loss and the
@@ -44,40 +34,14 @@ schedule:
 # preconditioning. The DDPM schedule above is ignored. Sampling must use
 # `--use-edm` to invoke the Heun 2nd-order sampler. Default: disabled
 # (v2-v5 DDPM/v-pred behavior preserved).
-#
-# NOTE: Phase E (v8) — when copula.enabled is true, EDM should typically
-# be disabled. Copula-Gaussianized data has marginals ~N(0,1) by
-# construction, so EDM's σ-dependent preconditioning offers no benefit
-# over plain ε-prediction (which is also more joint-structure-preserving).
 edm:
-  enabled: false
+  enabled: true
   sigma_min: 0.002
   sigma_max: 80.0
-  sigma_data: 1.5                  # ≈ std of normalized training data; tune if it underperforms
+  sigma_data: 1.0                  # ≈ std of normalized training data; tune if it underperforms
   rho: 7.0
   P_mean: -1.2                     # log-normal σ sampling: log σ ~ N(P_mean, P_std)
   P_std: 1.2
-
-# Phase E (v8) — Copula-based diffusion (per-feature empirical-CDF
-# Gaussianization). The diffusion model trains on Gaussianized data;
-# heavy tails and original-scale marginals are restored mechanically at
-# sampling time via the inverse empirical CDF. Targets the marginals-vs-
-# joints tension documented in Work6_FINAL §9: ε-prediction on Gaussian
-# targets preserves cross-feature covariance (joints), while the inverse
-# CDF restores any marginal shape (heavy tails, asymmetric skew, etc.).
-#
-# When `enabled: true`:
-#   - Dataset uses CopulaTransform.normalize() instead of NormStats
-#   - Sampling pipeline applies CopulaTransform.denormalize() before decode
-#   - Recommend: prediction_type="eps", edm.enabled=false, conditioning_type="film"
-#     (architecturally closest to v2 which uniquely preserved OFI→return)
-copula:
-  enabled: true
-  clip_quantile: 0.001             # winsorize tails to ε / 1-ε to avoid Φ⁻¹(0) = -∞
-  max_samples_per_feature: 5000000 # cap CDF storage (~40 MB per feature at 5M float64)
-  # If null, auto-detect discrete features (≤32 unique values).
-  # Otherwise, list column indices into FEATURE_COLUMNS.
-  discrete_features: null
 
 training:
   learning_rate: 1.0e-4

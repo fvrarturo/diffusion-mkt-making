@@ -61,6 +61,14 @@ def main():
                          "schedule. Required for checkpoints trained with edm.enabled=true. "
                          "When set, --prediction-type is ignored (EDM uses x_0-prediction "
                          "via preconditioning). Default off (v2-v5 DDIM behavior).")
+    ap.add_argument("--use-copula", action="store_true",
+                    help="Phase E / v8+: load CopulaTransform instead of NormStats. "
+                         "Required for checkpoints trained with copula.enabled=true. "
+                         "Decode pipeline auto-applies the inverse transform (CDF) since "
+                         "decode calls .denormalize() through the duck-typed normalizer.")
+    ap.add_argument("--copula-path", default=None,
+                    help="Path to CopulaTransform JSON. Defaults to "
+                         "{norm-stats path}.copula.json next to --norm-stats.")
     ap.add_argument("--edm-sigma-min", type=float, default=0.002)
     ap.add_argument("--edm-sigma-max", type=float, default=80.0)
     ap.add_argument("--edm-sigma-data", type=float, default=0.5)
@@ -142,11 +150,26 @@ def main():
     else:
         schedule = DDIMSchedule.cosine(T=1000, prediction_type=args.prediction_type)
         print(f"[sample-batch] prediction_type={args.prediction_type}", flush=True)
-    if not Path(args.norm_stats).exists():
-        raise FileNotFoundError(
-            f"norm stats {args.norm_stats} not found — required for decode (anchor_mid)."
+    if args.use_copula:
+        from diffmm.data.copula_transform import CopulaTransform
+        copula_path = (
+            Path(args.copula_path) if args.copula_path
+            else Path(args.norm_stats).with_suffix(".copula.json")
         )
-    norm = NormStats.load(args.norm_stats)
+        if not copula_path.exists():
+            raise FileNotFoundError(
+                f"copula transform {copula_path} not found — required for v8+ sampling. "
+                "Train script saves it alongside norm_stats."
+            )
+        norm = CopulaTransform.load(copula_path)
+        print(f"[sample-batch] using CopulaTransform from {copula_path} "
+              f"(discrete_features={norm.discrete_features})", flush=True)
+    else:
+        if not Path(args.norm_stats).exists():
+            raise FileNotFoundError(
+                f"norm stats {args.norm_stats} not found — required for decode (anchor_mid)."
+            )
+        norm = NormStats.load(args.norm_stats)
     if args.anchor_mid_override is not None:
         from dataclasses import replace
         print(f"[sample-batch] anchor_mid override: {args.anchor_mid_override} (was {norm.anchor_mid})", flush=True)
