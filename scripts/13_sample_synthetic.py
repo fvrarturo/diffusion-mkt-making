@@ -108,18 +108,31 @@ def main(cfg: DictConfig) -> None:
         x0_clip=sample_cfg.get("x0_clip"),
     )
 
-    if not Path(cfg.data.norm_stats_file).exists():
-        raise FileNotFoundError(
-            f"norm stats not found at {cfg.data.norm_stats_file} — required for decode "
-            "(provides anchor_mid). Run finetune once first to generate them."
-        )
-    norm = NormStats.load(cfg.data.norm_stats_file)
+    copula_enabled = bool(OmegaConf.select(cfg, "generator.copula.enabled", default=False))
+    if copula_enabled:
+        from diffmm.data.copula_transform import CopulaTransform
+        copula_path = Path(cfg.data.norm_stats_file).with_suffix(".copula.json")
+        if not copula_path.exists():
+            raise FileNotFoundError(
+                f"copula transform {copula_path} not found — required when "
+                "generator.copula.enabled=true (Phase E / v8+). Run finetune first to fit it."
+            )
+        norm = CopulaTransform.load(copula_path)
+        log.info("loaded CopulaTransform from %s (discrete=%s)", copula_path, norm.discrete_features)
+    else:
+        if not Path(cfg.data.norm_stats_file).exists():
+            raise FileNotFoundError(
+                f"norm stats not found at {cfg.data.norm_stats_file} — required for decode "
+                "(provides anchor_mid). Run finetune once first to generate them."
+            )
+        norm = NormStats.load(cfg.data.norm_stats_file)
     # Allow decode-time override of the anchor price without retraining.
     override = sample_cfg.get("anchor_mid_override", None)
     if override is not None:
         from dataclasses import replace
+        prev_anchor = norm.anchor_mid
         norm = replace(norm, anchor_mid=float(override))
-        log.info("anchor_mid overridden: %.2f (was %.2f)", norm.anchor_mid, NormStats.load(cfg.data.norm_stats_file).anchor_mid)
+        log.info("anchor_mid overridden: %.2f (was %.2f)", norm.anchor_mid, prev_anchor)
     out_dir = Path(cfg.cluster.synthetic_root)
 
     paths = decode_batch_to_parquet(

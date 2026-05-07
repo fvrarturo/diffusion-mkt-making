@@ -20,7 +20,7 @@ guidance_weight: 1.0             # 0 = unconditional; sweep {0,1,3} for the eval
 x0_clip: 4.0                     # null disables; 4.0 is generous for ~N(0,1) data
 eta: 0.0                         # 0 = deterministic DDIM
 window_length: 256
-n_features: 9                    # = len(FEATURE_COLUMNS)
+n_features: 8                    # = len(FEATURE_COLUMNS)
 batch_size: 16                   # batches per regime per seed (sampled in one pass on GPU)
 
 # Output

@@ -163,6 +163,21 @@ def decode_window_to_dataframe(
         pl.col("trade_sign").cast(pl.Int8),
         pl.col("regime_label").cast(pl.Categorical),
     ])
+    # If a window has no trade events, all entries in nullable columns are
+    # None and polars infers Null dtype. Re-cast to the canonical schema's
+    # expected types so downstream validation passes.
+    nullable_recasts = {
+        "trade_px": pl.Float64, "trade_sz": pl.Int64,
+        "trade_sign": pl.Int8, "is_lit": pl.Boolean,
+        "trade_dist": pl.Float64, "mid_return": pl.Float64,
+    }
+    cast_exprs = [
+        pl.col(col).cast(dtype)
+        for col, dtype in nullable_recasts.items()
+        if col in df.columns and df.schema[col] != dtype
+    ]
+    if cast_exprs:
+        df = df.with_columns(cast_exprs)
     return df
 
 

@@ -965,19 +965,22 @@ def test_copula_transform_preserves_rank_correlation():
     )
 
 
-def test_copula_transform_recovers_kurtosis_after_inverse():
-    """Inverse transform should restore the original heavy-tailed kurtosis."""
+def test_copula_transform_recovers_heavy_tail_after_inverse():
+    """Inverse transform should restore the original heavy-tailed shape — tested
+    via tail-quantile recovery (more stable than empirical kurtosis on heavy
+    tails, where the empirical kurtosis estimator has very high variance)."""
     import numpy as np
-    from scipy.stats import kurtosis
     from diffmm.data.copula_transform import CopulaTransform
     from diffmm.data.dataset import FEATURE_COLUMNS
 
     rng = np.random.default_rng(0)
-    # Heavy-tailed Student-t feature
-    arr = np.zeros((5000, 8), dtype=np.float32)
-    arr[:, 0] = rng.standard_t(df=2, size=5000)   # high kurtosis
+    n = 50_000
+    # Use df=5 Student-t: well-defined kurtosis (theoretical = 6), heavy enough
+    # to test the recovery, light enough that empirical statistics are stable.
+    arr = np.zeros((n, 8), dtype=np.float32)
+    arr[:, 0] = rng.standard_t(df=5, size=n)
     for j in range(1, 8):
-        arr[:, j] = rng.normal(size=5000)
+        arr[:, j] = rng.normal(size=n)
 
     ct = CopulaTransform(
         ecdf_quantiles={j: np.sort(arr[:, j].astype(np.float64)) for j in range(8)},
@@ -986,18 +989,36 @@ def test_copula_transform_recovers_kurtosis_after_inverse():
         feature_columns=FEATURE_COLUMNS,
         discrete_features=(),
         anchor_mid=30.0,
+        clip_quantile=0.001,
     )
-    real_kurt = kurtosis(arr[:, 0])
 
-    # Simulate "diffusion sampled in z-space" with N(0,1) draws
-    z_samples = rng.normal(size=(5000, 8)).astype(np.float32)
+    # Simulate "diffusion sampled in z-space" — large N for stable statistics
+    z_samples = rng.normal(size=(n, 8)).astype(np.float32)
     x_samples = ct.denormalize(z_samples)
-    sampled_kurt = kurtosis(x_samples[:, 0])
 
-    # The inverse CDF restores the original distribution shape — kurtosis should be close
-    # (within sampling noise; CDF-recovered kurtosis converges to true kurtosis with N).
-    assert abs(sampled_kurt - real_kurt) / max(abs(real_kurt), 1) < 0.5, (
-        f"sampled kurtosis {sampled_kurt:.2f} too far from real {real_kurt:.2f}"
+    # Tail-quantile recovery: 99th percentiles should match (up to clipping at 0.1%)
+    for q in (0.95, 0.99):
+        real_q = np.quantile(arr[:, 0], q)
+        synth_q = np.quantile(x_samples[:, 0], q)
+        rel_err = abs(synth_q - real_q) / max(abs(real_q), 1e-6)
+        assert rel_err < 0.10, (
+            f"q{int(q*100)}: real={real_q:.3f}, synth={synth_q:.3f}, rel_err={rel_err:.2%}"
+        )
+
+    # Kurtosis recovery within 2× — empirical kurtosis is high-variance for
+    # heavy tails, so we accept a wide band rather than tight equality.
+    from scipy.stats import kurtosis
+    real_kurt = kurtosis(arr[:, 0])
+    sampled_kurt = kurtosis(x_samples[:, 0])
+    assert real_kurt > 2.0, "test setup error: should have heavy tails"
+    assert sampled_kurt > 1.0, (
+        f"sampled kurtosis {sampled_kurt:.2f} too small — inverse CDF lost the tail"
+    )
+    # Both should be in the same order of magnitude
+    ratio = sampled_kurt / real_kurt
+    assert 0.3 < ratio < 3.0, (
+        f"sampled/real kurtosis ratio {ratio:.2f} outside [0.3, 3.0] band "
+        f"(real={real_kurt:.2f}, sampled={sampled_kurt:.2f})"
     )
 
 
