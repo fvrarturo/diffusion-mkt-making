@@ -1115,3 +1115,171 @@ def test_copula_transform_drop_in_for_normstats_in_dataset():
         for j in [0, 1, 7]:
             assert abs(x[:, j].mean().item()) < 1.0
             assert x[:, j].std().item() < 3.0   # within reasonable Gaussian range
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dequantization tests (Phase E v9 — fix for the v8 z-collapse on point masses)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_zero_inflated_array(n: int, frac_zero: float, scale: float, seed: int = 0):
+    """Build a 1-D array with `frac_zero` mass at exactly 0 and the rest
+    drawn from a standard normal scaled by `scale`. Mimics the structure
+    of mid_return: 89% exact zeros + 11% continuous tails."""
+    rng = np.random.default_rng(seed)
+    arr = rng.normal(0, scale, n).astype(np.float64)
+    n_zeros = int(round(n * frac_zero))
+    zero_idx = rng.choice(n, n_zeros, replace=False)
+    arr[zero_idx] = 0.0
+    return arr
+
+
+def test_copula_dequantization_detects_point_mass():
+    """`fit` should detect the 89%-mass-at-zero point mass and store ε for it."""
+    import numpy as np
+    from diffmm.data.copula_transform import CopulaTransform
+    from diffmm.data.dataset import FEATURE_COLUMNS
+
+    arr = _make_synthetic_tape_for_copula(n_events=20_000)
+    # Inject a strong point mass at 0 in feature 7 (mid_return) — 89% zeros
+    n = arr.shape[0]
+    rng = np.random.default_rng(0)
+    zero_idx = rng.choice(n, int(n * 0.89), replace=False)
+    arr[zero_idx, 7] = 0.0
+
+    # Write to a temp parquet and fit
+    import polars as pl, tempfile, os
+    df = pl.DataFrame({col: arr[:, i] for i, col in enumerate(FEATURE_COLUMNS)})
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "tape.parquet")
+        df.write_parquet(path)
+        ct = CopulaTransform.fit(
+            [path], feature_columns=FEATURE_COLUMNS,
+            discrete_features=(6,),  # trade_sign
+            dequantize=True, point_mass_threshold=0.05,
+        )
+    # Feature 7 (mid_return) should have a point mass at 0
+    assert 7 in ct.point_masses, f"Expected point mass detected for feature 7; got {list(ct.point_masses.keys())}"
+    pm_values = [v for v, _ in ct.point_masses[7]]
+    assert any(abs(v) < 1e-9 for v in pm_values), f"Point mass value 0 not detected; got {pm_values}"
+    # ε should be positive and bounded by half the typical value scale
+    eps = ct.point_masses[7][0][1]
+    assert eps > 0
+    assert eps < 1.0   # arr was unit-scale so eps ought to be much smaller
+
+
+def test_copula_dequantization_round_trip_zero_inflated():
+    """Dequantization should preserve zeros after round trip (snap-back works),
+    while letting non-zero values flow through unchanged."""
+    import numpy as np
+    from diffmm.data.copula_transform import CopulaTransform
+    from diffmm.data.dataset import FEATURE_COLUMNS
+
+    arr = _make_synthetic_tape_for_copula(n_events=20_000)
+    n = arr.shape[0]
+    rng = np.random.default_rng(1)
+    zero_idx = rng.choice(n, int(n * 0.89), replace=False)
+    arr[zero_idx, 7] = 0.0
+
+    import polars as pl, tempfile, os
+    df = pl.DataFrame({col: arr[:, i] for i, col in enumerate(FEATURE_COLUMNS)})
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "tape.parquet")
+        df.write_parquet(path)
+        ct = CopulaTransform.fit(
+            [path], feature_columns=FEATURE_COLUMNS,
+            discrete_features=(6,),
+            dequantize=True, point_mass_threshold=0.05,
+        )
+    # Round trip — for feature 7 with point mass at 0, zeros should remain zeros
+    z = ct.normalize(arr)
+    x_back = ct.denormalize(z)
+    # Zeros in input should re-emerge as zeros (snap-back via requantization)
+    zero_mask_in = arr[:, 7] == 0.0
+    n_zeros_out = int((x_back[:, 7] == 0.0).sum())
+    n_zeros_in = int(zero_mask_in.sum())
+    # At least 80% of zeros should round-trip exactly (some may drift to neighbouring
+    # values if dequant noise pushes them across the snap-back band)
+    assert n_zeros_out >= 0.80 * n_zeros_in, (
+        f"Round-trip lost too many zeros: {n_zeros_out}/{n_zeros_in}"
+    )
+
+
+def test_copula_dequantization_produces_well_spread_z():
+    """After dequantization, the z-distribution for the point-mass feature should
+    span N(0,1) properly — not collapse to a single z-value (the v8 failure mode)."""
+    import numpy as np
+    from diffmm.data.copula_transform import CopulaTransform
+    from diffmm.data.dataset import FEATURE_COLUMNS
+
+    arr = _make_synthetic_tape_for_copula(n_events=20_000)
+    n = arr.shape[0]
+    rng = np.random.default_rng(2)
+    zero_idx = rng.choice(n, int(n * 0.89), replace=False)
+    arr[zero_idx, 7] = 0.0
+
+    import polars as pl, tempfile, os
+    df = pl.DataFrame({col: arr[:, i] for i, col in enumerate(FEATURE_COLUMNS)})
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "tape.parquet")
+        df.write_parquet(path)
+        ct_dequant = CopulaTransform.fit(
+            [path], feature_columns=FEATURE_COLUMNS, discrete_features=(6,),
+            dequantize=True, point_mass_threshold=0.05,
+        )
+        ct_no_dequant = CopulaTransform.fit(
+            [path], feature_columns=FEATURE_COLUMNS, discrete_features=(6,),
+            dequantize=False,
+        )
+
+    z_with = ct_dequant.normalize(arr)[:, 7]
+    z_without = ct_no_dequant.normalize(arr)[:, 7]
+    # Without dequantization: the 89% zeros all map to the SAME z value (a single
+    # CDF jump point). Test directly: the modal z-value should account for ≥80% of mass.
+    z_no, counts_no = np.unique(np.round(z_without, 4), return_counts=True)
+    modal_frac_no = counts_no.max() / len(z_without)
+    assert modal_frac_no >= 0.80, (
+        f"No-dequant should have ≥80% mass at single z; got modal_frac={modal_frac_no}"
+    )
+    # With dequantization: that same modal mass should be smeared across many z-values.
+    z_w, counts_w = np.unique(np.round(z_with, 4), return_counts=True)
+    modal_frac_w = counts_w.max() / len(z_with)
+    assert modal_frac_w < 0.05, (
+        f"Dequantized z should be smeared, not concentrated; got modal_frac={modal_frac_w}"
+    )
+    # And dequantized z should have meaningfully wider spread (covers more of N(0,1)).
+    assert float(z_with.std()) > float(z_without.std()), (
+        f"Dequantized std ({z_with.std()}) should exceed concentrated std ({z_without.std()})"
+    )
+    # Tail mass: |z| > 2 should occur > 1% of the time (vs essentially never in the
+    # concentrated case). N(0,1) has ~4.55% above |z|=2; we expect at least some tail.
+    frac_tail = float((np.abs(z_with) > 2).mean())
+    assert frac_tail > 0.01, f"Dequantized z lacks tail mass: frac|z|>2 = {frac_tail}"
+
+
+def test_copula_dequantization_save_load_preserves_point_masses():
+    """save() / load() round trip should preserve the point_masses dict."""
+    import numpy as np, tempfile, os
+    from diffmm.data.copula_transform import CopulaTransform
+    from diffmm.data.dataset import FEATURE_COLUMNS
+
+    pm_input = {3: [(0.0, 1.5e-5)], 7: [(0.0, 2.5e-5), (1.0, 5e-4)]}
+    ct = CopulaTransform(
+        ecdf_quantiles={j: np.sort(np.random.default_rng(0).normal(0, 1, 200).astype(np.float64))
+                        for j in range(8) if j != 6},
+        mean=np.zeros(8, dtype=np.float32),
+        std=np.ones(8, dtype=np.float32),
+        feature_columns=FEATURE_COLUMNS,
+        discrete_features=(6,),
+        anchor_mid=42.0,
+        point_masses=pm_input,
+    )
+    with tempfile.TemporaryDirectory() as td:
+        save_path = os.path.join(td, "copula.json")
+        ct.save(save_path)
+        ct2 = CopulaTransform.load(save_path)
+    assert set(ct2.point_masses.keys()) == set(pm_input.keys())
+    for j in pm_input:
+        assert len(ct2.point_masses[j]) == len(pm_input[j])
+        for (v1, e1), (v2, e2) in zip(ct2.point_masses[j], pm_input[j]):
+            assert abs(v1 - v2) < 1e-12
+            assert abs(e1 - e2) < 1e-12

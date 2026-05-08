@@ -300,20 +300,23 @@ The decisive question for v8 is whether the OFI→return correlation survives di
 
 ---
 
-## 7. The 7-Checkpoint Comparison (to be filled in)
+## 7. The Checkpoint Comparison (filled in 2026-05-07, extended 2026-05-08)
 
-| Metric | Real | v2 | v5 | v6 | v7 | v7_b | **v8 (Phase E)** |
-|---|---|---|---|---|---|---|---|
-| Excess kurtosis | 755 | 122 | 1256 | 186 | 124 | 122 | **?** |
-| W-1 | — | 1.74e-06 | 9.81e-07 | 1.72e-06 | 1.54e-06 | 1.51e-06 | ? |
-| ACF lag-50 dev | 0 | 1.28 | 0.296 | 0.665 | 0.206 | 0.162 | ? |
-| ACF β | 0.21 | 0.66 | 0.542 | 0.752 | 0.616 | 0.585 | ? |
-| Skew | -0.47 | small | -17.2 | -1.08 | -0.20 | +0.795 | ? |
-| Trade-sign ACF | 0.675 | 0.385 | 0.103 | 0.526 | 0.514 | 0.480 | ? |
-| F.1b cosine max | — | 0.831 | 0.722 | 0.722 | 0.715 | 0.720 | ? |
-| Synth std (× real) | 1.0 | ~1 | ~1 | 0.24 | 0.30 | 0.30 | **?** |
-| **ρ_diff** | — | **+0.40** | -0.20 | +0.20 | +0.20 | +0.20 | **?** |
-| G.1 pass | 16/16 | 13/16 | 13/16 | 13/16 | 13/16 | 13/16 | ? |
+| Metric | Real | v2 | v5 | v6 | v7 | v7_b | **v8** | **v8_b** | **v9** | **v9_b** |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Excess kurtosis (uncond) | 755 | 122 | 1256 | 186 | 124 | 122 | 2.6 | degen | (small) | (small) |
+| Conditional kurtosis | 55.8 | 122 | ? | ? | ? | 174 | 155.7 | NaN | **−1.7** | **−1.6** |
+| frac_zero (mid_return) | 0.89 | 0.00 | ? | ? | ? | 0.00 | 0.17 | 1.0 | **0.99** | **0.99** |
+| Synth std (× real) | 1.0 | ~1 | ~1 | 0.24 | 0.30 | 0.30 | 1.85 | 0.0 | (real-scale) | (real-scale) |
+| OFI→return β sign | + | + | ? | − | − | − | **−** | 0 | (broken) | (broken) |
+| Trade fraction | 4.8% | ~5% | ? | ? | ? | ? | 0.9% | 0% | low | moderate |
+| **ρ_diff** | — | **+0.40** | -0.20 | +0.20 | +0.20 | +0.20 | **+0.80** ⚠ | **+0.80** ⚠ | **−0.80** | **−1.00** |
+| **A2 above A1?** | yes | **yes** | no | no | no | no | yes (artifact) | no | **no** | **no** |
+| G.1 pass | 16/16 | 13/16 | 13/16 | 13/16 | 13/16 | 13/16 | 7/16 | 6/16 | (TBD) | (TBD) |
+
+**Two ρ_diff results are flagged ⚠ as artifacts:** v8/v8_b achieved +0.80 with degenerate or near-degenerate output. v9's −0.80 is the **honest measurement** of the same broken OFI joint that v8 was hiding behind return collapse. See §11 for the corrected causal story.
+
+**v8_b ρ_diff is flagged ⚠ as a tie-breaking artifact** — synth tapes have zero variance, so all four agents earn identical zero PnL and the ranking is determined by alphabetical tie-break. The "0.80" is meaningless for v8_b; only v8's 0.80 is a real result.
 
 ---
 
@@ -332,3 +335,174 @@ Phase E is the most theoretically-grounded intervention in the workstream. The m
 All three outcomes strengthen the report's discussion section. The negative result (mode 2) would actually be quite interesting — it would point at a deeper architectural failure in how MSE-based diffusion handles cross-feature dependence, beyond just the heavy-tail issue.
 
 The diffusion model workstream is genuinely complete after Phase E regardless of outcome — we'll have systematically tested every reasonable intervention against the marginals-vs-joints problem.
+
+---
+
+## 9. Outcome (added 2026-05-07)
+
+**v8 ρ_diff = +0.80 — the headline number is a 2× improvement over both the historical-val baseline (ρ_hist = 0.40) and every prior post-v2 architecture (~+0.20 for v5/v6/v7/v7_b). It also restores the truth's A2 > A1 ordering that all post-v2 architectures had broken.**
+
+**But the underlying mechanism is *not* what Phase E predicted.** The three primary criteria from §6 were:
+
+1. ❌ **Kurtosis 400-1000** → got **2.6**. The copula did not recover heavy tails.
+2. ✅ **No A1/A2 swap** → π_diff = `[A0, A2, A3, A1]`. Truth's A2 > A1 ordering is preserved.
+3. ❌ **OFI→return β > 0** → got **−1.4e-5** (Δ=10) and **−6.2e-4** (Δ=50). Wrong-sign correlation, same failure mode as v6/v7.
+
+So 1/3 primary criteria passed. By the §6 outcome map, this is a **partial result** — definitely above "broken ranking" (mode c) but well short of "all 3 clear" (mode a). The ranking-correlation win is real; the marginal-stress-recovery story Phase E was designed to deliver is not.
+
+### Why ρ_diff was high anyway (mechanism analysis)
+
+The copula's inverse-CDF only restores heavy tails *if the diffusion model emits z-values that span the full tails of N(0,1)*. With ε-prediction + min_snr_gamma=5 weighting, the model is incentivized to produce conservative, sub-Gaussian outputs (small |z|), so the inverse CDF only recovers bulk values, not tails. Kurtosis 2.6 is consistent with the model emitting near-uniform-ish z-values plus Gaussian noise.
+
+The high ρ_diff = 0.80 nonetheless reflects a real signal: **agent rankings can be preserved even when marginals/bulk correlations are broken**. The mechanism:
+- A0 (constant) sits out → well-defined Sharpe regardless of synth distribution.
+- A2_AS_OFI vs A1_AS: even with wrong-sign OFI (β_synth has opposite sign of β_real), the *magnitude* of the OFI signal still distinguishes A2 from A1. Agents that USE OFI (A2) earn *different* Sharpe than those that don't (A1), and the ordering can match truth even when the correlation sign is flipped.
+
+This is a weaker but interesting positive result and worth its own paragraph in the report's discussion: rank-correlation tests can credit a generator with capturing agent-ranking signal even when the underlying mechanism (heavy-tail stress + correctly-signed OFI predictability) is broken. Whether that's a feature or a bug depends on what you're using the generator for.
+
+### v8_b: degenerate outcome
+
+v8_b's identical-looking ρ_diff = +0.80 is an artifact. The model collapsed to zero-variance output at sample time:
+- `synth std = 0`, `synth kurt = blank`, `trade fraction = 0.000`
+- All four agents earn identical zero PnL on every tape
+- π_diff = `[A0, A1, A2, A3]` is just alphabetical tie-breaking
+
+The likely cause is AdaLN-Zero's zero-initialization combined with `min_snr_gamma=5` weighting — both push the model toward conservative outputs, and together they produced full collapse. v8 (FiLM) avoided this because FiLM doesn't have the zero-init bias. **v8_b should be excluded from comparisons; it's a sampling-time failure, not a meaningful result.**
+
+### Implications for the workstream
+
+Phase E gave us a useful agent-ranking generator (v8) but did not solve the marginals problem. The "marginals vs joints" framing from Work6_FINAL §9 stands: the only checkpoint that delivers v2-class agent-ranking signal AND v2-class realistic marginals is still **v2 itself**. v8 doubled the ranking signal but lost the marginal stress (kurtosis 2.6 vs v2's 122 vs real's 755).
+
+**A v9 worth trying** would lower (or remove) `min_snr_gamma` to allow the model to commit to extreme z-values, which the copula can then map to true tails. If kurtosis recovers to 100+ at v9 with ρ_diff still near +0.80, that would be the clean Phase E result that was originally predicted.
+
+For the report: lead with v8's ρ_diff = +0.80 as the headline, but be honest about the mechanism — it's not heavy-tail stress that drives the ranking improvement, it's preserved ranking-of-agents under broken marginals. That's a more interesting story than "we recovered the kurtosis" anyway: it tells the reader something about *what hypothesis tests like ρ_diff actually measure* in this kind of setup.
+
+---
+
+## 10. v9 — Dequantization Fix (planned 2026-05-07)
+
+The §9 diagnostic identified the v8 marginal failure as a **CDF discontinuity at point masses**: real INTC mid_return is 89% exact zeros, the empirical CDF jumps at x=0, and the probit Φ⁻¹ collapses the 89% to a single z-value. The diffusion model trains on a near-constant z target for that feature → output collapses to a near-constant in z-space → inverse CDF gives small-magnitude returns clustered at 0 (kurt 2.6 instead of predicted 400-1000).
+
+The standard fix from the normalizing-flow literature (Theis et al. 2016): **dequantization**. At fit time, spread point-mass values uniformly over [v_pm − ε, v_pm + ε] before building the empirical CDF. At normalize time, add fresh U(−ε, +ε) noise per call (so the model sees a smoothly-distributed z target). At denormalize time, snap any sampled value within ε of v_pm back to v_pm (restores the zero-inflated structure exactly).
+
+Implemented in `src/diffmm/data/copula_transform.py` with a robust 5th-percentile-based ε computation (the literal-min approach was pathological for features like trade_dist with continuous density near 0). All 11 copula tests pass. Configured via `copula.dequantize: true` in `configs/generator/finetune.yaml`.
+
+**Two parallel runs:**
+- **v9** = copula + dequantization + FiLM + ε-prediction (the "fix v8's preprocessing" run)
+- **v9_b** = copula + dequantization + FiLM + v-prediction (does dequantized copula rescue v-pred?)
+
+Predicted outcomes per the §6 decision tree:
+- ρ_diff ≥ +0.40 (preserve v8's ranking signal)
+- Kurtosis 100-800 (heavy-tail recovery via the inverse CDF, now that the CDF is continuous)
+- frac_zero ≈ 0.80 (close to real's 0.89)
+
+**See `notebooks/2026-05-07_deep-diagnostic-and-v9-plan.md` for the full mechanism analysis and implementation log.**
+
+---
+
+## 11. v9 Outcome (added 2026-05-08)
+
+Both runs trained ~6h (hit time limit, both saved checkpoints), sampled overnight on CPU partition (400 tasks at %20 concurrency), validated, and ran ph5 hypothesis. Headline:
+
+| Run | ρ_diff | π_diff | A2 above A1? |
+|---|---|---|---|
+| v8 (baseline) | +0.80 ⚠ | `[A0, A2, A3, A1]` | yes (artifact) |
+| **v9** | **−0.80** | `[A3, A1, A0, A2]` | no — A2 ranked LAST |
+| **v9_b** | **−1.00** | `[A3, A1, A2, A0]` | no — exact reverse of truth |
+
+ρ = −1.00 means v9_b's ranking is the perfect anti-image of held-out truth. This is a sharp, unambiguous negative result.
+
+### What dequantization actually did to the marginals
+
+Dequantization "fixed" the marginal but not in a useful way:
+
+| Model | frac_zero | cond_std | cond_kurt |
+|---|---|---|---|
+| real | 0.89 | 6.76e-5 | **55.8** |
+| v8 (no dequant) | 0.17 | 1.65e-5 | 155.7 |
+| v9 | **0.99** (over-corrected) | 1.23e-4 | **−1.7** (uniform-shaped) |
+| v9_b | 0.99 | 1.42e-4 | −1.6 |
+
+frac_zero is now ≈ real (slightly over-corrected — snap-back works too aggressively because ε was too large). But the **conditional return distribution is now uniform-noise-shaped** (kurt ≈ −1.7 ≈ kurtosis of a uniform distribution). Heavy tails are NOT restored. The cause: ε for mid_return was 4.93e-5; real conditional std is 6.76e-5; **ε / cond_std ≈ 0.73**, so the dequantization noise dominates the actual return signal. The model learned to emit "uniform noise within the band" rather than reproduce the heavy-tailed continuous part.
+
+**Methodology rule for the report:** dequantization ε must be at least an order of magnitude *below* the conditional standard deviation of the non-point-mass portion of the distribution. For mid_return the right ε is ~1e-6 to 1e-7 (below the smallest tick-return scale), not ~5e-5. The 5th-percentile-based ε was robust against floating-point artifacts but produced a band too wide for the natural feature scale.
+
+### Why ρ_diff flipped — the corrected causal story
+
+**An incorrect first reading of this result** would be: "dequantization changed the joint structure and broke ρ_diff." That framing is wrong on the causal direction.
+
+Look at v8's OFI→return regression from `60_deep_diagnostic.py` (run 2026-05-07, BEFORE v9 existed):
+
+```
+v8 OFI→return slopes by horizon Δ:
+  Δ=1:   slope=-4.59e-10   sign=-
+  Δ=10:  slope=-1.60e-09   sign=-
+  Δ=50:  slope=-1.05e-08   sign=-
+  Δ=100: slope=-2.68e-08   sign=-
+```
+
+**v8's OFI joint was already wrong-signed at every horizon, BEFORE any dequantization existed.** Same direction as v6/v7/v7_b. The copula transform broke the OFI→return joint the moment it was applied — dequantization had nothing to do with breaking the joint.
+
+What was different about v8 vs v9 is the **PnL CONSEQUENCES** of the broken joint:
+
+- **v8**: returns were collapsed (z-mean = −2.55, z-std = 0.30 → near-constant model output). Wrong-sign OFI signal had ~zero PnL effect because returns were tiny everywhere. All four agents earned ≈ −$6 per tape regardless of strategy. The ρ_diff = +0.80 was measuring **fill-count noise on top of near-zero returns** — happened to align with truth's tail-risk dimension by accident.
+
+- **v9**: dequantization restored return variance to ~real scale. **Now the wrong-sign OFI has real PnL consequences.** A2_AS_OFI tilts quotes per the (broken) OFI signal, gets more fills (3× A1's fill rate), and every fill is in the wrong direction → A2 loses the most → A2 ranks LAST. The mechanism is unambiguous in the per-agent table:
+
+| agent | v9 pnl | v9 fills | v9 fill_rate |
+|---|---|---|---|
+| A0_const | +0.004 | 0.0002 | 53 |
+| A1_AS | +0.005 | 0.0003 | 104 |
+| **A2_AS_OFI** | **−0.005** | **0.0007** | **284** ← only loser; uses OFI |
+| A3_AS_VPIN | +0.006 | 0.0002 | 68 |
+
+**The ρ_diff = −0.80 in v9 is the HONEST measurement of the same broken OFI joint that v8 was hiding.** v8's +0.80 was an artifact; v9's −0.80 is the truth.
+
+### Why a v9.1 with smaller ε would NOT fix ρ_diff
+
+A v9.1 with ε ~ 1e-7 (an order of magnitude below cond_std) would fix the marginal pathology — frac_zero should land at ~0.89, conditional kurt should recover toward 55. **But it would not recover ρ_diff.** The OFI→return joint is broken by the copula transform itself, not by the dequantization band-width. Smaller ε won't reverse the wrong sign on the OFI slope.
+
+The deeper limitation: **the copula approach is incompatible with preserving weak cross-feature correlations.** Real-data Spearman ρ(OFI, mid_return) = 0.071 — that's noise-level. A rank correlation that weak cannot survive the round-trip through:
+1. forward Gaussianization (transforms each feature to z-space)
+2. diffusion training on Gaussianized data (model learns smoothed joints with MSE loss)
+3. sampling (DDIM with ε-prediction)
+4. inverse CDF (back to original scale)
+
+Each stage adds noise. A 0.071 rank correlation is below the noise floor of this pipeline. The copula's *mathematical* guarantee that monotone transforms preserve Spearman ρ is theoretically true and practically irrelevant when ρ ≈ 0 to begin with.
+
+### Reframed §6 outcome map (post-hoc)
+
+| Predicted outcome | Actual classification |
+|---|---|
+| 3/3 primary clear (ρ_diff ≥ +0.40, no swap, kurt 400-1000) | DID NOT OCCUR for any v8/v9/v9_b run |
+| ρ_diff = +0.40 but kurt < 400 ("modest fix") | (v8 looked like this, but +0.80 was artifact) |
+| ρ_diff = +0.20 (broken ranking) | (most prior post-v2 runs) |
+| ρ_diff < +0.20 ("Phase E broke something") | **v9 / v9_b — but this is the HONEST measurement, not breakage** |
+
+The decision tree assumed v8's +0.80 was real. With that artifact removed, the actual Phase E outcome is mode (c)/(d): the copula approach cannot deliver v2-class ranking signal, and we now know why (weak Spearman correlations don't survive the copula pipeline).
+
+---
+
+## 12. Final Verdict on Phase E
+
+**Phase E is conclusively a negative result.** The copula-based approach:
+- Did not recover heavy tails (v8 kurt=2.6 vs predicted 400-1000)
+- Did not preserve OFI→return joint (wrong sign at every horizon, in every variant)
+- Produced apparent +0.80 ρ_diff in v8 only as an artifact of return collapse
+- Confirmed the artifact in v9, where dequantization restored variance and revealed the broken joint as ρ_diff = −0.80
+
+**The methodological contribution that survives is sharper than "dequantize before copula":**
+
+> **Copula-based generative models are inadequate for financial microstructure data because the agent-relevant cross-feature relationships are noise-level (Spearman ρ ~ 0.07) and cannot survive the Gaussianization → diffusion training → inverse CDF round-trip. The mathematical guarantee that copula transforms preserve rank correlations is meaningful only when those correlations are well above the noise floor of the diffusion pipeline. For zero-inflated data with weak joints (a common combination in market microstructure), copula-diffusion approaches will fail by construction, regardless of dequantization or other preprocessing fixes.**
+
+This is the first systematic demonstration of this limitation we're aware of, and belongs in the report's discussion as a methodological note for anyone considering copula-based diffusion for similar data.
+
+### Updated workstream-level position
+
+The marginals-vs-joints story from Work6_FINAL §9 is now refined, not refuted:
+- **v2** remains the only generator that delivers v2-class ranking (ρ_diff = +0.40) AND v2-class realistic marginals (kurt 122). It does so because it doesn't transform the data — it just z-scores. Joint structure is preserved by being preserved-by-default.
+- **v6/v7/v7_b/v8/v9** all break the OFI joint via different mechanisms (v-prediction, EDM σ-weighting, copula). No single intervention rescues the joint while improving marginals.
+- **v8's apparent +0.80 ρ_diff was a false positive** caused by return collapse hiding the broken joint.
+- **The "right" answer doesn't exist within the diffusion-based generator framework we tested.** A fundamentally different approach (e.g., autoregressive event-by-event generation, or a generator trained directly on multi-feature joint targets like a copula-aware loss) would be needed to deliver both realistic marginals AND preserved joints for this kind of data.
+
+The honest report conclusion: **the proposed approach (synthetic stress testing via diffusion-generated counterfactual LOBs) faces a structural limitation we have characterized but not resolved.** v2 is the practical recommendation IF a user must choose one of our generators today; the field-level conclusion is that the framework needs a different kind of generator for this class of problem.

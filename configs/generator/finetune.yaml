@@ -78,6 +78,32 @@ copula:
   # If null, auto-detect discrete features (≤32 unique values).
   # Otherwise, list column indices into FEATURE_COLUMNS.
   discrete_features: null
+  # Phase E v9 (2026-05-07) — dequantize point masses before fitting the CDF.
+  # INTC mid_return is 89% exact zeros (quote_update events with no mid change);
+  # trade_sz is 95% zeros (no-trade events). Without dequantization the empirical
+  # CDF is discontinuous at these point masses, the probit Φ⁻¹ collapses each
+  # point mass to a single z-value, and the diffusion model learns a
+  # near-constant z (kurtosis 2.6 instead of predicted 400-1000 — see deep
+  # diagnostic 2026-05-07). Dequantization spreads each point mass uniformly
+  # over [v-ε, v+ε]; at sample time values near v_pm are snapped back.
+  # Reference: Theis et al. 2016, "A note on the evaluation of generative models".
+  dequantize: true
+  point_mass_threshold: 0.05       # frequency cutoff for "this is a point mass"
+
+# Phase F Model A — Cascade conditional generation.
+# When `noise_mask`/`loss_mask` are set, the trainer treats them as per-feature
+# binary masks: channels with mask=0 are NOT noised (passed through clean as
+# conditioning) and contribute 0 to the loss. Used to train Stage 2 of a
+# cascade: keep book features (bid/ask, sizes, trade) clean, only diffuse the
+# conditional channel of interest (typically mid_return = index 7).
+# Defaults: both null → all-ones (v2 behavior, every channel diffused).
+# FEATURE_COLUMNS index map:
+#   0=bid_dist  1=ask_dist  2=bid_sz  3=ask_sz
+#   4=trade_dist  5=trade_sz  6=trade_sign  7=mid_return
+# Stage 2 of the v10 cascade uses [0,0,0,0,0,0,0,1] for both masks.
+cascade:
+  noise_mask: null
+  loss_mask: null
 
 training:
   learning_rate: 1.0e-4
@@ -125,6 +151,48 @@ training:
   # more epochs to converge — bumping patience prevents premature stopping.
   early_stopping_patience: 6
   num_workers: 4
+
+  # Phase F Model B — auxiliary losses computed on the single-step x̂_0
+  # approximation. Each component is curriculum-ramped (lambda 0 before
+  # ramp_start_epoch, ramp linearly to lambda_final at ramp_end_epoch).
+  # Defaults: all disabled → no aux losses (v2 behavior).
+  # All operate on x̂_0 = (x_t - √(1-ᾱ)·ε_pred)/√ᾱ via stop-gradient
+  # through schedule constants. Stable at v2's hyperparameter scale.
+  aux_losses:
+    # 1. Joint OFI→return slope preservation. OFI proxy = bid_sz - ask_sz
+    # at x̂_0 scale. Per-window OLS slope of return on OFI; MSE against
+    # `target_slope` (precomputed on real INTC: ~1.11e-4 at Δ=50).
+    joint:
+      enabled: false
+      lambda_final: 0.1
+      ramp_start_epoch: 2
+      ramp_end_epoch: 5
+      bid_sz_idx: 2
+      ask_sz_idx: 3
+      return_idx: 7
+      target_slope: 1.11e-4
+    # 2. Kurtosis hinge. One-sided penalty on (target_kurt - kurt(x̂_0_return)),
+    # squared and normalized by target_kurt². No penalty if kurt overshoots
+    # (v5 showed overshoot is reachable; under-shoot is the v2 problem).
+    kurt:
+      enabled: false
+      lambda_final: 0.01
+      ramp_start_epoch: 3
+      ramp_end_epoch: 6
+      return_idx: 7
+      target_kurt: 500.0
+    # 3. Tail-importance weighting. Per-window weight w = 1 + α·(extremity/σ_data)^p
+    # where extremity = max|return| over the window. Adds the *delta* over the
+    # baseline ε-MSE to encourage learning rare large-magnitude windows.
+    tail:
+      enabled: false
+      lambda_final: 1.0
+      ramp_start_epoch: 0
+      ramp_end_epoch: 3
+      alpha: 0.5
+      p: 2.0
+      sigma_data: 1.0
+      return_idx: 7
 
 checkpointing:
   dir: checkpoints

@@ -153,4 +153,96 @@ def ddim_sample(
         dir_xt = torch.sqrt(torch.clamp(1 - a_next - sigma ** 2, min=0.0)) * eps
         x = torch.sqrt(a_next) * x0_pred + dir_xt + noise
 
+
+def ddim_sample_cascade(
+    eps_theta: Callable[[Tensor, Tensor, Tensor], Tensor],
+    *,
+    clean_features: Tensor,           # (B, L, F) — clean book state from Stage 1
+    noise_mask: Tensor,               # (F,) 0/1 — 1 = diffuse this channel
+    schedule: DDIMSchedule,
+    condition: Tensor,
+    null_condition: Tensor,
+    guidance_weight: float = 1.0,
+    n_steps: int = 200,
+    device: torch.device | str = "cpu",
+    seed: int | None = None,
+    eta: float = 0.0,
+    x0_clip: float | None = 4.0,
+) -> Tensor:
+    """Cascade reverse-DDIM: only channels with noise_mask=1 are diffused;
+    channels with mask=0 are kept fixed at `clean_features` throughout.
+
+    Phase F Model A (v10): Stage 1 (= v2) generates book features → clean_features.
+    Stage 2 generates mid_return conditional on those clean book features.
+    The mask tells the sampler which channels to drive via reverse diffusion
+    vs. which to leave as conditioning context.
+
+    The Stage 2 model was trained with the same noise_mask in DDPMTrainer, so
+    it has learned to predict ε only for the masked-1 channels (loss was
+    masked-1 only) and to interpret the clean channels as fixed context.
+    """
+    B, L, F = clean_features.shape
+    assert noise_mask.shape == (F,), f"noise_mask shape {noise_mask.shape} != ({F},)"
+
+    if seed is not None:
+        gen = torch.Generator(device=device).manual_seed(seed)
+        init_noise = torch.randn(clean_features.shape, generator=gen, device=device)
+    else:
+        init_noise = torch.randn_like(clean_features)
+
+    nm = noise_mask.to(device).view(1, 1, -1)              # (1, 1, F)
+
+    # x_t init: clean channels start at x_0; noised channels start at N(0,1).
+    x = nm * init_noise + (1.0 - nm) * clean_features
+
+    a_bar = schedule.alphas_cumprod.to(device)
+    T = a_bar.shape[0]
+    timesteps = torch.linspace(T - 1, 0, n_steps + 1, dtype=torch.long, device=device)
+
+    pred_type = schedule.prediction_type
+    if pred_type not in ("eps", "v"):
+        raise ValueError(f"unknown prediction_type {pred_type!r}")
+
+    for i in range(n_steps):
+        t = timesteps[i]
+        t_next = timesteps[i + 1]
+        a_t = a_bar[t]
+        a_next = a_bar[t_next] if t_next >= 0 else torch.tensor(1.0, device=device)
+
+        t_batch = t.expand(B)
+        out_cond = eps_theta(x, t_batch, condition)
+        if guidance_weight != 0.0:
+            out_uncond = eps_theta(x, t_batch, null_condition)
+            out = (1.0 + guidance_weight) * out_cond - guidance_weight * out_uncond
+        else:
+            out = out_cond
+
+        if pred_type == "eps":
+            eps = out
+            x0_pred = (x - torch.sqrt(1.0 - a_t) * eps) / torch.sqrt(a_t)
+        else:
+            v = out
+            x0_pred = torch.sqrt(a_t) * x - torch.sqrt(1.0 - a_t) * v
+            eps = torch.sqrt(1.0 - a_t) * x + torch.sqrt(a_t) * v
+
+        if x0_clip is not None:
+            x0_pred = x0_pred.clamp(-x0_clip, x0_clip)
+            if pred_type == "v":
+                eps = (x - torch.sqrt(a_t) * x0_pred) / torch.sqrt(torch.clamp(1.0 - a_t, min=1e-12))
+
+        if eta > 0:
+            sigma = eta * torch.sqrt((1 - a_next) / (1 - a_t)) * torch.sqrt(1 - a_t / a_next)
+            noise = sigma * torch.randn_like(x)
+        else:
+            sigma = torch.tensor(0.0, device=device)
+            noise = 0.0
+        dir_xt = torch.sqrt(torch.clamp(1 - a_next - sigma ** 2, min=0.0)) * eps
+        x_diffused = torch.sqrt(a_next) * x0_pred + dir_xt + noise
+
+        # Mask-respecting update: noised channels follow DDIM; clean channels
+        # are reset to the original clean_features.
+        x = nm * x_diffused + (1.0 - nm) * clean_features
+
+    return x
+
     return x

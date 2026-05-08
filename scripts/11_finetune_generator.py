@@ -102,12 +102,16 @@ def main(cfg: DictConfig) -> None:
                     discrete_features=discrete,
                     clip_quantile=float(copula_cfg.get("clip_quantile", 0.001)),
                     max_samples_per_feature=int(copula_cfg.get("max_samples_per_feature", 5_000_000)),
+                    dequantize=bool(copula_cfg.get("dequantize", True)),
+                    point_mass_threshold=float(copula_cfg.get("point_mass_threshold", 0.05)),
                 )
                 norm.save(copula_path)
                 log.info(
-                    "fit copula in %.1fs → %s  (discrete_features=%s, clip=%g)",
+                    "fit copula in %.1fs → %s  (discrete_features=%s, clip=%g, dequantize=%s, point_masses=%s)",
                     time.time() - t0, copula_path,
                     norm.discrete_features, norm.clip_quantile,
+                    bool(copula_cfg.get("dequantize", True)),
+                    {j: [(v, round(eps, 8)) for v, eps in pms] for j, pms in norm.point_masses.items()},
                 )
         else:
             norm_path = Path(cfg.data.norm_stats_file)
@@ -195,6 +199,18 @@ def main(cfg: DictConfig) -> None:
             conditioning_type=conditioning_type,
         )
         schedule = _build_schedule(cfg)
+        # Phase F Model A: read cascade noise/loss masks (default None = v2 behavior).
+        cascade_cfg = cfg.generator.get("cascade", None)
+        noise_mask = list(cascade_cfg.noise_mask) if cascade_cfg and cascade_cfg.get("noise_mask") else None
+        loss_mask = list(cascade_cfg.loss_mask) if cascade_cfg and cascade_cfg.get("loss_mask") else None
+        if noise_mask is not None or loss_mask is not None:
+            log.info("Phase F cascade: noise_mask=%s loss_mask=%s", noise_mask, loss_mask)
+        # Phase F Model B: read auxiliary-loss config (default None = no aux losses).
+        aux_cfg = cfg.generator.training.get("aux_losses", None)
+        aux_loss_dict = OmegaConf.to_container(aux_cfg, resolve=True) if aux_cfg else None
+        if aux_loss_dict:
+            enabled = {k: v.get("enabled", False) for k, v in aux_loss_dict.items() if isinstance(v, dict)}
+            log.info("Phase F aux losses enabled: %s", enabled)
         pl_module = DDPMTrainer(
             generator=gen,
             schedule=schedule,
@@ -205,6 +221,9 @@ def main(cfg: DictConfig) -> None:
             min_snr_gamma=cfg.generator.training.get("min_snr_gamma", None),
             prediction_type=cfg.generator.schedule.get("prediction_type", "eps"),
             cfg_dropout_curriculum=_build_curriculum(cfg),
+            noise_mask=noise_mask,
+            loss_mask=loss_mask,
+            aux_loss_cfg=aux_loss_dict,
         )
 
     import pytorch_lightning as pl
@@ -296,6 +315,37 @@ def main(cfg: DictConfig) -> None:
     resume_path = cfg.get("resume_from", None)
     if resume_path:
         log.info("RESUMING from checkpoint: %s", resume_path)
+
+    # Phase E coda Experiment 2 (v10, 2026-05-08): `+init_from_checkpoint=<path>`
+    # loads MODEL WEIGHTS only (fresh optimizer, fresh epoch counter, fresh LR
+    # scheduler). Use this to start a new training run from another model's
+    # learned weights — e.g., fine-tune v2's ε-prediction weights as the
+    # initialization for a v-prediction run, mapping the marginals-vs-joints
+    # frontier as a continuous trajectory.
+    #
+    # Distinct from `+resume_from=<path>` (above), which restores ALL training
+    # state. Use init_from_checkpoint when you want a different loss target
+    # or different hyperparameters from the source checkpoint.
+    init_path = cfg.get("init_from_checkpoint", None)
+    if init_path:
+        if resume_path:
+            log.warning("Both +resume_from and +init_from_checkpoint set — "
+                        "resume_from takes precedence (full state restored).")
+        else:
+            log.info("INITIALIZING WEIGHTS from checkpoint: %s", init_path)
+            import torch as _torch
+            state = _torch.load(init_path, map_location="cpu")
+            sd = state.get("state_dict", state)
+            missing, unexpected = pl_module.load_state_dict(sd, strict=False)
+            if missing:
+                log.warning("init_from_checkpoint: missing keys (%d): %s",
+                            len(missing), missing[:10])
+            if unexpected:
+                log.warning("init_from_checkpoint: unexpected keys (%d): %s",
+                            len(unexpected), unexpected[:10])
+            log.info("init_from_checkpoint: weights loaded; optimizer is fresh, "
+                     "training starts at epoch 0")
+
     trainer.fit(pl_module, train_loader, val_loader, ckpt_path=resume_path)
 
     best_path = callbacks[0].best_model_path

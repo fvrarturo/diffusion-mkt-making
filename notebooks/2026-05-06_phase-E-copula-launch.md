@@ -75,13 +75,71 @@ Prior runs (v2-v7) sampled in ~20 min. We assumed they were on GPU with high con
 
 **Lesson for future projects:** check the cluster's actual concurrency limits before defaulting to GPU. If the model fits in <1 min per task on CPU and the partition is permissive, CPU+high-concurrency beats GPU+constrained-concurrency by orders of magnitude on wall time.
 
-## Open questions / next steps
+## Validation results (added 2026-05-07)
 
-- [ ] Confirm CPU sampling works end-to-end (1-task sanity submit currently being tested)
-- [ ] Run v8_b sampling on CPU once v8 finishes
-- [ ] Validation (Phase F): per-feature kurtosis recovery, OFI→return Spearman, A1/A2 ranking, regime-conditional copula
-- [ ] Hypothesis test (Phase 5): ρ_diff between v8/v8_b synth ranking and held-out-truth ranking
-- [ ] Side-by-side: v2 / v6 / v7_b / v8 / v8_b on the headline metrics (kurtosis, OFI corr, A1/A2 swap, ρ_diff)
+Sampling completed for both runs at 6400/6400 parquets each (full 100 seeds × 4 regimes). Then ph4 replay-synth + ph6 validation + ph5 hypothesis test were run for each.
+
+### Headline ρ_diff is misleading without context
+
+| Run | ρ_diff | ρ_hist | p (one-sided) | π_diff | A2 above A1? |
+|---|---|---|---|---|---|
+| v8 (FiLM + copula) | **0.80** | 0.40 | 0.115 | `[A0, A2, A3, A1]` | ✅ Yes |
+| v8_b (AdaLN + copula) | 0.80 | 0.40 | 0.44 | `[A0, A1, A2, A3]` | ❌ No (swap) |
+| v2 (no copula, baseline ranking) | +0.40 | 0.40 | n.s. | — | ✅ Yes |
+| v6/v7/v7_b (no copula) | ~+0.20 | 0.40 | n.s. | — | ❌ No (swap) |
+
+Headline reads: **both copula variants double the rank-correlation against held-out truth** vs the historical-val baseline (and vs prior post-v2 architectures).
+
+But the validation metrics tell a different story.
+
+### v8_b is degenerate — exclude it
+
+Looking at `B1_return_stats.csv` for v8_b:
+- `synth std = 0.0`, `synth kurt = blank`, `synth min/max = 0.0`
+- Trade fraction synth = **0.000** vs real = 0.048
+- OFI regression `β_synth = 0` at every Δ, R² = 1.0 (artifact of zero variance)
+
+v8_b produced **flat-line synthetic tapes**. The π_diff is a tie-breaking order over four agents earning identical zero PnL. The "ρ_diff = 0.8" is meaningless. Toss it.
+
+The likely cause: AdaLN-Zero's zero-initialization on conditioning paths combined with `min_snr_gamma=5` weighting produced an over-conservative model that collapses to mean output at sample time. Worth verifying by loading the v8_b checkpoint and doing a forward pass on real data — if loss is sane in train mode, it's a sample-time issue.
+
+### v8 is non-degenerate but partial
+
+| Metric | Real | v8 | Predicted (Phase E) | Verdict |
+|---|---|---|---|---|
+| Return kurtosis | 755 | **2.63** | 400-1000 | **Fail** — copula didn't recover tails |
+| Return std | 2.19e-5 | 4.05e-5 | match real | 1.8× too wide |
+| OFI→return β sign (Δ=10) | + | **−** | + | **Fail** — wrong-sign correlation |
+| OFI→return β sign (Δ=50) | + | **−** | + | **Fail** — same |
+| Trade fraction | 4.8% | 0.9% | ~5% | 5× under-trades |
+| Spread 1-tick % | ~95% | 95.7% | match | Pass |
+| Joint spread-imbalance JSD | — | 0.154 | <0.3 | Pass |
+| Crossed books | — | 0.0% | 0% | Pass |
+
+Phase E predicted: kurtosis 400-1000, no A1/A2 swap, OFI corr preserved. Of the three primary criteria, **only the A1/A2 ordering passed**. Yet ρ_diff hit 0.8 anyway.
+
+### Why ρ_diff is high even with broken marginals/correlations
+
+The copula approach has a hidden assumption: it only restores heavy tails *if the diffusion model emits z-values that span the full tails of N(0,1)*. With ε-prediction + min_snr_gamma=5 weighting, the model is incentivized to produce **conservative, sub-Gaussian outputs** (small |z|), so the inverse CDF only recovers bulk values, not tails.
+
+But agent rankings can be preserved even when marginals/bulk correlations aren't:
+- A0 (constant) sits out: well-defined Sharpe regardless.
+- A2_AS_OFI vs A1_AS: even with wrong-sign OFI, the *magnitude* of the OFI signal still distinguishes A2 from A1. Agents that USE OFI (A2) earn different Sharpe than those that don't (A1), and the ordering can match truth even when the sign is flipped.
+
+This is a real but weaker finding: **rank-correlation can preserve agent rankings even when marginal/bulk distributions are wrong**. The copula didn't deliver the predicted mechanism (heavy-tail recovery via inverse CDF), but the ranking structure survives anyway.
+
+### Updated honest verdict
+
+- v8_b: degenerate, exclude.
+- v8: ρ_diff = 0.8 is real (and a 2× improvement over baselines), but doesn't validate the Phase E theory cleanly. Marginals weren't recovered; bulk OFI correlation has wrong sign. The win is on agent-ranking specifically — which is what the hypothesis test measures, but not what Phase E was *predicted* to fix.
+
+### What's left
+
+- [x] Sampling, ph4 replay, ph6 validation, ph5 hypothesis — all completed for both runs
+- [ ] Sanity-check v8's ρ_diff durability — re-run hypothesis test with bootstrap of synth tapes / different holdout seed. If ρ_diff stays near 0.8, robust. If it swings, noise.
+- [ ] Diagnose v8_b collapse — load checkpoint, forward-pass on real data in train mode, see if it's training- or sample-time.
+- [ ] Try v8 with `min_snr_gamma=0` (or much lower) — if that recovers kurtosis, the diagnosis (sub-Gaussian model outputs) is confirmed.
+- [ ] Side-by-side comparison table: v2 / v6 / v7_b / v8 / v8_b on headline metrics — drop into Work6 docs.
 
 ## Predicted outcomes (record so we can verify against them)
 
