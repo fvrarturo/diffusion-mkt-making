@@ -378,3 +378,165 @@ This is a much more nuanced story than "v2 has the right joint structure." It's 
 | Combined "production" generator | **doesn't exist within tested options** | Pareto frontier; tradeoffs unavoidable |
 
 v10 (cascade) and v11 (aux losses) are still training. They could change this picture if either lands in a previously-empty region of the Pareto frontier — e.g., v10 cascade with ρ_diff ≥ +0.40 AND correct OFI sign would be the first generator to win on TWO axes. Watching the queue.
+
+---
+
+## TRADES supplementary metrics + Predictive score (2026-05-08, late afternoon)
+
+Ran `scripts/62_trades_metrics.py` (volume-volatility, leverage effect, PCA coverage, mid-price traces) + `scripts/63_predictive_score.py` (LSTM train-on-synth, test-on-real MAE) over all 18 generators via `slurms/ph7_trades_eval.slurm`. Total wall time 18 min on `mit_normal` partition.
+
+### Headline: three evaluation frameworks give CONTRADICTORY rankings
+
+| Framework | Best | Runner-up | Worst |
+|---|---|---|---|
+| **G1 (stylized facts)** | v3_e9 / v4 / v5 / v7 / v7_b (13/15) | v2 / v3_e19 / v3p5 / v6 / v9 (12/15) | v3p5_noclip (5/15) |
+| **PCA coverage** (TRADES Fig 2) | **v8 (85.2%)** | v9 (71.4%) | noclip variants (0%) |
+| **Predictive score** (TRADES Table 1) | **v3_e9_noclip (4.02× replay)** | v2_noclip (8.25×) | v2_remapped (266×) |
+| **ρ_diff** (central hypothesis test) | v2 (+0.40) | v8 / v9 are noise (artifacts) | v9_b (-1.00) |
+
+**No two frameworks pick the same winner.** v8 wins PCA coverage, is 16th of 18 on predictive score (117× replay). v3_e9_noclip wins predictive score, has 0% PCA coverage and 5/15 G1. v2_remapped has the closest marginal scale to real and the worst predictive score (266× replay). v2 wins ρ_diff and is mid-pack on G1, mid-pack on coverage, mid-pack on predictive score. The metrics are empirically anti-correlated.
+
+### Mechanism: predictive score rewards temporal pattern fidelity at ANY scale
+
+The noclip variants — declared "ablation degenerate" by every prior framing — win predictive score by the largest margin. v3_e9_noclip has 5/15 G1 passes, 0% PCA coverage, 44× real return std — and an LSTM trained on it generalizes to real with the lowest MAE (4× replay). Mechanism:
+
+- The noclip variants have **scale-exploded magnitudes** but **correct relative ordering** of per-event features.
+- The LSTM learns "when bid_sz drops and ask_sz rises, mid_return tends to go negative" — a directional/temporal pattern.
+- That pattern transfers to real data **regardless of absolute scale**, because per-source z-score normalization renormalizes the magnitude away.
+- v8/v9 (copula) have correct marginal scale but the temporal patterns were disrupted by Gaussianization → diffusion → inverse-CDF round-trip. The LSTM learns the WRONG associations.
+
+The predictive score is measuring something much subtler than "marginal realism" — it's measuring whether the temporal/correlational structure of synthetic events matches real well enough that a downstream learner generalizes. v3_e9_noclip happens to have that property despite failing every aggregate metric. v2_remapped happens to lack it despite matching every aggregate marginal.
+
+### v2_remapped's predictive-score failure mechanism
+
+v2_remapped MAE = 3.06e-2 = **266× replay** — the worst of any generator we've tested. Mechanism:
+
+- v2_remapped has 99% mid_return = 0 and ~1% non-zero values stretched to real-magnitude scale (10× larger than v2's nonzero returns).
+- Per-source z-score normalization with that wide std (`std=1.0e-4`) → real test data values get renormalized to extreme z-values.
+- The LSTM trained on v2_remapped sees mostly z ≈ 0 with rare large outliers; tested on real, every nonzero return looks like an extreme outlier → predictions explode → MAE explodes.
+
+**Takeaway:** "matching real marginals" can hurt downstream tasks if the matching mechanism produces a different EVENT-LEVEL scale calibration than real has. Per-source normalization is the standard TRADES protocol and we kept it deliberately, but it interacts pathologically with v2_remapped's specific zero-inflation.
+
+### Two important metric caveats
+
+**1. The leverage effect metric failed universally.** All 18 models had 0 usable tapes — even REAL data gave only mean +0.006 (essentially zero) at 1-minute buckets. INTC at event-level/microstructure timescale doesn't exhibit the leverage effect; it's a daily/weekly phenomenon. For the report: acknowledge this metric isn't informative at our timescale; would need either much longer tapes or aggregation to multi-hour buckets.
+
+**2. Volume-volatility correlation failed for the realistic-trade-rate models.** Real has a clean +0.341 mean (Karpoff effect well-defined). Stitched generators with 50-99% trade fractions span +0.13 to +0.43 — most close to real. But v8/v9/v9_b all gave 0 usable tapes because their realistic 5% trade fraction means 1-minute buckets often have zero trades, so per-bucket volume = 0 and Pearson is undefined.
+
+**This is itself a finding:** the TRADES evaluation protocol cannot evaluate the kind of generator we want most (one with realistic trade fractions), because the protocol assumes high-frequency event mixes. For the report: flag this as a limitation of TRADES evaluation when applied to realistic large-tick microstructure.
+
+### The methodological contribution that emerges
+
+> **No single evaluation metric captures "generator quality" for synthetic LOB data.** Across our 18-checkpoint × 7-axis evaluation matrix, the metrics are empirically anti-correlated:
+>
+> - G1 stylized facts measure distributional realism (per-feature marginals + temporal autocorrelations).
+> - PCA coverage measures distributional diversity (does synth span real's summary-statistic space?).
+> - Predictive score measures temporal pattern transferability (does an LSTM trained on synth generalize?).
+> - ρ_diff measures fill-dynamics alignment with a specific holdout-truth agent ranking.
+> - OFI sign / OFI magnitude measure microstructure correlation correctness.
+>
+> These five evaluation frameworks pick five different winners across our 18 generators. **Any claim of the form "model X is the best generator" is incomplete without specifying best FOR WHAT.** That's the project's most generalizable methodological finding: it applies beyond LOB diffusion models to any synthetic-data evaluation setting where multiple downstream uses are plausible.
+
+This reframing strengthens, not weakens, the project's contribution. We're not claiming "we built the best generator"; we're claiming "we mapped which interventions move which axis, and demonstrated that the axes are not jointly optimizable within the diffusion-based framework we tested."
+
+### Cross-axis empirical anti-correlations (worth noting in the report)
+
+Sample correlations across the 18 generators (excluding v8_b which is degenerate):
+
+| Axis pair | Sign of correlation |
+|---|---|
+| G1 pass count ↔ PCA coverage | weak negative (v7_b 13/15 G1 but only 25% coverage) |
+| G1 pass count ↔ Predictive score | weak (no clean direction) |
+| **PCA coverage ↔ Predictive score** | **strong NEGATIVE** (v8 best on coverage, near-worst on predictive) |
+| Marginal realism ↔ Predictive score | strong negative (v2_remapped extreme case) |
+| ρ_diff ↔ everything else | uncorrelated (v2 wins ρ_diff, mid-pack everywhere else) |
+
+The strong negative correlation between PCA coverage and predictive score is the single most surprising finding — they were *intended* by TRADES to be complementary measures of generator quality. In our setting they're contradictory: high coverage means the model produced diverse-looking tapes (good) but those tapes had temporal patterns far from real (bad for downstream prediction).
+
+### Updated final decision matrix
+
+| Downstream use | Recommended generator | Why |
+|---|---|---|
+| Central hypothesis test (ρ_diff agent ranking) | **v2** | Only generator with positive ρ_diff; mechanism likely artifactual |
+| Validation suite (G1 stylized facts) | **v3_e9 / v4 / v5 / v7 / v7_b** (tied 13/15) | Best on aggregate stylized fact pass count |
+| OFI→return microstructure correctness | **v2_remapped** | Only generator with OFI slope magnitude within 2× of real |
+| Distribution coverage (PCA hull overlap) | **v8** | Highest coverage of real summary-statistic space (85%) |
+| Predictive score (TRADES, LSTM training data quality) | **v3_e9_noclip** | LSTM trained on it generalizes best to real (4.02× replay) |
+| Realistic trade event fractions | **v9** (5.0%), v9_b (3.2%), v2_remapped (4.5%) | Match real's 4.8% trade fraction |
+| Volatility clustering (|r| ACF lag-50) | **v9** | Best deviation from real (0.017) |
+| Combined "production" answer | **doesn't exist** | The Pareto frontier is real; no single winner |
+
+Seven different desirable properties, seven different generators winning. This is the cleanest demonstration of "evaluation metric ≠ ground truth quality" we've produced.
+
+---
+
+## v10 cascade + v11 aux-losses — final outcomes (2026-05-09)
+
+After resolving the cascade memory bug (`@torch.no_grad()` was missing on `ddim_sample_cascade`, OOM-killed every task at 8G/16G/32G mem until the decorator was added — peak then dropped to ~2GB), both runs completed the full sample → ph4 → ph5 → archive pipeline.
+
+### v10 cascade (Model A): ρ_diff = −0.40, NON-degenerate, real failure
+
+| | Predicted (Phase F §2bis) | Actual |
+|---|---|---|
+| **ρ_diff** | +0.40 to +0.80 | **−0.40** |
+| **π_diff** | preserves A2 > A1 | `[A1, A2, A3, A0]` (A0 dropped from FIRST to LAST) |
+| **OFI sign at Δ=10/Δ=50** | PASS (cascade enforces joint) | **FAIL** at both |
+| **Marginal scale realism** | inherits Stage 1's | mid_return std=1.23e-7 (7× smaller than v2's 9e-7) |
+| **G1 pass count** | 11-13/15 | **9/15** |
+| **Mid_return frac_zero** | low (continuous) | 0.0000 (continuous, ≠ real's 0.89) |
+| **Trade fraction** | inherited from v2 | 60% (matches v2's 59%, ≠ real's 5%) |
+| **Degenerate?** | No | **No** — agents trade actively, ranking is real |
+
+**The cascade hypothesis was structurally falsified.** We predicted that Stage 2's loss being explicitly conditional on Stage 1's book features would force the OFI→return joint to be enforced at the right sign and magnitude. In reality:
+
+- Stage 2 DID enforce SOME relationship between book features and mid_return — the model can't satisfy its loss otherwise. We can see this in the non-zero mid_return output and the agent ranking's responsiveness to book-state.
+- BUT the relationship Stage 2 learned does NOT match real's OFI→return sign. v10_cascade fails both G1 OFI sign tests (rows 12, 13) — same failure pattern as v8_b/v3p5_noclip.
+- A0 (constant agent, doesn't trade) dropped to LAST in v10_cascade. Truth has A0 first. The whole ranking is anti-truth.
+
+This is publishable as a clean negative result for structural decomposition: **causal conditioning forces some joint structure, but does not guarantee that joint matches truth's joint**. The cascade interface enforced "Stage 2's mid_return responds to book features" but the mapping it learned is not the right mapping.
+
+**v10_cascade does PASS one important G1 check** that most generators fail: ACF(|r|) lag-50 deviation. It joins v5/v7/v7_b/v9/v9_b as one of only 6 generators (of 20) that satisfy this volatility-clustering long-memory criterion. This is consistent with Stage 2's conditional generation preserving some temporal structure inherited from v2's training distribution.
+
+### v11 aux losses (Model B): ρ_diff = +0.80 ARTIFACT, degenerate collapse
+
+| | Predicted (Phase F §2ter) | Actual |
+|---|---|---|
+| **ρ_diff** | +0.40 to +0.60 | +0.80 (ARTIFACT — same pattern as v8_b) |
+| **π_diff** | A2 > A1 preserved | `[A0, A1, A2, A3]` (alphabetical tie-break) |
+| **mid_return std** | preserved real-class | **0** (every event mid_return = 0) |
+| **mid_return frac_zero** | match real ~0.89 | **1.0** (over-collapsed) |
+| **Trade fraction** | preserved | **0.04%** (5 trade events of 12800) |
+| **Spread / size kurtosis** | within target | extreme (spread kurt 3190, ask_sz kurt 530) |
+| **G1 pass count** | 13+/15 | **6/15** |
+
+**v11 is degenerate via the same mechanism as v8_b but a different path**:
+- v11's training trajectory: val loss went from 0.011 (epoch 0, no aux loss active) to 0.034-0.098 (epochs 1-8 with full aux loss curriculum). Higher val loss = baseline ε-MSE objective being violated by the aux loss pressure.
+- The model "satisfied" the aux losses by:
+  - Driving spread/size kurtosis to extreme outliers (kurt loss target met)
+  - Collapsing mid_return to constant 0 (makes baseline MSE finite under aux pressure)
+- Result: degenerate output → all 4 agents earn ~0 PnL → ranking falls out by tie-break → A0 first by alphabetical ordering → ρ_diff = +0.80 by accident.
+
+**Auxiliary loss training in DDPMTrainer can satisfy the aux objectives but at the cost of collapsing the primary reconstruction.** Same lesson as Phase E v8: optimizing for one property breaks another in the diffusion-based framework.
+
+### Updated multi-axis Pareto matrix (now 20 generators)
+
+| Run | ρ_diff | G1 | OFI sign | Trade fraction | Real result? |
+|---|---|---|---|---|---|
+| v2 | +0.40 ✓ | 12/15 | PASS | 56% | ✓ Real |
+| v3_e9 | +0.20 | 13/15 | PASS | 55% | ✓ |
+| v4 / v5 / v7 / v7_b | +0.20 | 13/15 | PASS | 55-78% | ✓ |
+| v8 (copula) | +0.80 ⚠ | 8/15 | FAIL | 0.9% | Artifact |
+| v8_b | +0.80 ⚠ | 6/15 | FAIL | 0% | Artifact (degenerate) |
+| v9 (copula+dequant) | −0.80 | 12/15 | PASS | 5% | ✓ Honest negative |
+| v9_b | −1.00 | 11/15 | PASS | 3% | ✓ |
+| v2_remapped | −0.40 | 9/15 | PASS | 5% | ✓ Honest negative |
+| **v10_cascade** | **−0.40** | **9/15** | **FAIL** | **60%** | **✓ Real (anti-truth joint)** |
+| **v11 aux losses** | **+0.80** ⚠ | **6/15** | **FAIL** | **0.04%** | **Artifact (degenerate collapse)** |
+
+Three artifact ρ_diff = +0.80 results (v8/v8_b/v11) all share the same mechanism: degenerate output → tie-break ordering. Two real-but-anti-truth ρ_diff = −0.40 results (v2_remapped, v10_cascade). One real ρ_diff = +0.40 (v2 only).
+
+### What both experiments tell us in one paragraph
+
+> **Both Phase F Models A and B failed to beat v2 on ρ_diff in informatively different ways.** Model A (cascade) produced a non-degenerate generator with a structurally-enforced book-state→mid_return joint, but the joint Stage 2 learned was anti-truth, yielding ρ_diff = −0.40. Model B (aux losses) collapsed mid_return to constant zero while satisfying the kurt and tail aux losses on other features, yielding the degenerate-tie-break ρ_diff = +0.80 artifact. **Neither structural decomposition (causal conditioning) nor explicit objective-level supervision (aux losses) produced a generator that beats v2 on the central hypothesis test.** The marginals-vs-joints tension is structural to the diffusion-based generator framework we tested — no amount of architectural cleverness within this framework rescues both axes simultaneously.
+
+The PCA-coverage-vs-predictive-score anti-correlation finding from Stage 1 of the TRADES eval is now even more interesting: those two evaluation metrics already disagreed on which generator is "best" before v10_cascade and v11 entered the comparison. After adding them, the contradictions deepen. The "best for what?" framing remains the project's strongest methodological contribution.

@@ -129,7 +129,16 @@ def main(cfg: DictConfig) -> None:
     )
     log.info("Stage 1 sample: shape=%s mid_return.std=%.4g (will be replaced by Stage 2)",
              tuple(stage1_x0.shape), stage1_x0[..., 7].std().item())
-    del gen1
+
+    # Force-free Stage 1 memory before loading Stage 2. Without this, PyTorch
+    # modules retain references via hooks/buffers and Python's GC doesn't run
+    # before Stage 2's allocation, OOM-killing tasks at 8G mem (observed
+    # 2026-05-09 across cascade jobs 13648320 and 13636992 even after the
+    # @torch.no_grad() fix). Explicit gc.collect() + del + (cuda) empty_cache
+    # cuts Stage-1 memory before Stage 2 starts.
+    import gc
+    del gen1, null1
+    gc.collect()
     if device == "cuda":
         torch.cuda.empty_cache()
 

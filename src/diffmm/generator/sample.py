@@ -153,7 +153,10 @@ def ddim_sample(
         dir_xt = torch.sqrt(torch.clamp(1 - a_next - sigma ** 2, min=0.0)) * eps
         x = torch.sqrt(a_next) * x0_pred + dir_xt + noise
 
+    return x
 
+
+@torch.no_grad()
 def ddim_sample_cascade(
     eps_theta: Callable[[Tensor, Tensor, Tensor], Tensor],
     *,

@@ -5,6 +5,7 @@ results/
 __pycache__/
 **/__pycache__/
 venv/
+logs/
 third_party/
 *.egg-info/
 eggs/
