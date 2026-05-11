@@ -18,25 +18,33 @@
 # Configure with env vars:
 #   SYNTH_DIR  = path to synthetic_v2_stitched/INTC/
 #   N_SYNTH    = synth tapes sampled per regime (default 250; lower → less memory)
-#   OUT_DIR    = output directory (default results/validation/INTC).
+#   OUT_DIR    = output directory (default results/validation/<TICKER>).
 #                Override to allow parallel runs writing to distinct dirs.
+#   TICKER     = ticker symbol (default INTC). Used both for the --ticker arg
+#                and for filtering real parquets in data/processed/val/.
 #
 # Example:
 #   SYNTH_DIR=/orcd/scratch/orcd/007/favara/diffmm/synthetic_v2_stitched/INTC \
 #   OUT_DIR=results/validation_v2/INTC \
+#   sbatch slurms/ph6_validate_cpu.slurm
+#
+#   # Cross-ticker run:
+#   SYNTH_DIR=$HOME/orcd/scratch/diffmm/synthetic/tsla_v2/TSLA \
+#   OUT_DIR=results/_archive/tsla_v2/validation TICKER=TSLA \
 #   sbatch slurms/ph6_validate_cpu.slurm
 
 source slurms/_common.sh
 
 : "${SYNTH_DIR:?SYNTH_DIR must be set}"
 N_SYNTH="${N_SYNTH:-250}"
-OUT_DIR="${OUT_DIR:-results/validation/INTC}"
+TICKER="${TICKER:-INTC}"
+OUT_DIR="${OUT_DIR:-results/validation/$TICKER}"
 
 python scripts/50_validate_generator.py \
     --parts B C D \
     --real-dir data/processed/val/ \
     --synth-dir "$SYNTH_DIR" \
-    --ticker INTC \
+    --ticker "$TICKER" \
     --out-dir "$OUT_DIR" \
     --n-synth-per-regime "$N_SYNTH"
 

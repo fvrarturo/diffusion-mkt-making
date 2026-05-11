@@ -196,6 +196,7 @@ def train_one_model(
     test_X: np.ndarray, test_y: np.ndarray,
     *, batch_size: int = 256, max_epochs: int = 20, patience: int = 3,
     lr: float = 1e-3, device: str = "cpu", seed: int = 42,
+    hidden_dim: int = 64,
 ) -> dict:
     """Fit on train_X/y (with internal 90/10 train/val split for early stop),
     evaluate MAE on test_X/y. Returns dict with test_mae + train metadata."""
@@ -219,7 +220,8 @@ def train_one_model(
     val_loader = DataLoader(WindowDataset(Xva, yva), batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(WindowDataset(test_X, test_y), batch_size=batch_size, shuffle=False)
 
-    model = MidPricePredictor(input_dim=train_X.shape[-1]).to(device)
+    model = MidPricePredictor(input_dim=train_X.shape[-1],
+                              hidden_dim=hidden_dim).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     mse_loss = nn.MSELoss()
     mae_loss = nn.L1Loss()
@@ -314,6 +316,9 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", default="cpu", choices=["cpu", "cuda"])
+    ap.add_argument("--hidden-dim", type=int, default=64,
+                    help="LSTM hidden dim. Use a sweep over {32,64,128} to "
+                         "test ranking robustness (P2.G4 in Work10_update.md).")
     args = ap.parse_args()
 
     if len(args.synth_dirs) != len(args.labels):
@@ -351,7 +356,8 @@ def main():
     Xte_n = apply_norm(real_test_X, mean_r, std_r)
     res = train_one_model("market_replay", Xtr_n, real_train_y, Xte_n, real_test_y,
                           batch_size=args.batch_size, max_epochs=args.max_epochs,
-                          patience=args.patience, lr=args.lr, device=device, seed=args.seed)
+                          patience=args.patience, lr=args.lr, device=device, seed=args.seed,
+                          hidden_dim=args.hidden_dim)
     res["train_source"] = "real_train"
     results.append(res)
 
@@ -379,7 +385,8 @@ def main():
         Xte_n = apply_norm(real_test_X, mean_s, std_s)
         res = train_one_model(label, Xtr_n, ytr, Xte_n, real_test_y,
                               batch_size=args.batch_size, max_epochs=args.max_epochs,
-                              patience=args.patience, lr=args.lr, device=device, seed=args.seed)
+                              patience=args.patience, lr=args.lr, device=device, seed=args.seed,
+                              hidden_dim=args.hidden_dim)
         res["train_source"] = label + "_synth"
         results.append(res)
 

@@ -51,19 +51,33 @@ def _load_real(real_dir: Path, ticker: str) -> list[pl.DataFrame]:
     return [parquet.read_tape(p) for p in paths]
 
 
-def _sample_synth(synth_dir: Path, n_per_regime: int = 250, seed: int = 0) -> list[pl.DataFrame]:
+def _sample_synth(synth_dir: Path, n_per_regime: int = 250, seed: int = 0,
+                   regime_filter: str | None = None) -> list[pl.DataFrame]:
+    """Load synthetic tapes from <synth_dir>/{base,high_vol,toxic,thin}/*.parquet.
+
+    `regime_filter`: if set to one of {base, high_vol, toxic, thin}, look ONLY
+    in that subdir. Falls back to treating `synth_dir` itself as the regime
+    leaf if the subdir doesn't exist (used by per-regime evaluation).
+    """
     paths_by_regime: dict[str, list[Path]] = {}
-    for r in ("base", "high_vol", "toxic", "thin"):
-        rd = synth_dir / r
+    candidates = [regime_filter] if regime_filter else ("base", "high_vol", "toxic", "thin")
+    for r in candidates:
+        rd = synth_dir / r if (synth_dir / r).exists() else synth_dir
         if rd.exists():
-            paths_by_regime[r] = sorted(rd.glob("day_*.parquet"))
+            paths = sorted(rd.glob("day_*.parquet")) or sorted(rd.glob("*.parquet"))
+            if paths:
+                paths_by_regime[r] = paths
     if not paths_by_regime:
-        raise FileNotFoundError(f"no synthetic tapes under {synth_dir}/{{base,high_vol,toxic,thin}}/")
+        raise FileNotFoundError(
+            f"no synthetic tapes under {synth_dir}"
+            + (f" (regime_filter={regime_filter})" if regime_filter else "/{base,high_vol,toxic,thin}/")
+        )
     rng = random.Random(seed)
     chosen: list[Path] = []
     for r, paths in paths_by_regime.items():
         chosen.extend(rng.sample(paths, min(n_per_regime, len(paths))))
-    log.info("loading %d synth tapes (≤%d per regime)", len(chosen), n_per_regime)
+    log.info("loading %d synth tapes (≤%d per regime%s)", len(chosen), n_per_regime,
+             f", regime={regime_filter}" if regime_filter else "")
     return [parquet.read_tape(p) for p in chosen]
 
 
@@ -370,6 +384,10 @@ def main():
     ap.add_argument("--v2-log", default=None,
                     help="SLURM .out log for v2 training (for E.1)")
     ap.add_argument("--n-synth-per-regime", type=int, default=250)
+    ap.add_argument("--regime", default=None,
+                    choices=["base", "high_vol", "toxic", "thin"],
+                    help="Restrict synth-tape loading to a single regime "
+                         "(used by per-regime G1 evaluation in P0.D).")
     ap.add_argument("--n-seeds-clip", type=int, default=20)
     ap.add_argument("--n-seeds-sweep", type=int, default=20)
     ap.add_argument("--device", default=None)
@@ -399,7 +417,8 @@ def main():
 
     t0 = time.time()
     real_per_day = _load_real(args.real_dir, args.ticker)
-    synth_per_tape = _sample_synth(args.synth_dir, args.n_synth_per_regime)
+    synth_per_tape = _sample_synth(args.synth_dir, args.n_synth_per_regime,
+                                    regime_filter=args.regime)
     log.info("data loaded in %.1fs", time.time() - t0)
 
     # Run requested parts

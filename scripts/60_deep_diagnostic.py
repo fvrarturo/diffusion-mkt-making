@@ -295,7 +295,8 @@ def forward_copula(values: np.ndarray, sorted_vals: np.ndarray, clip_q: float = 
 
 
 def z_space_analysis(df: pd.DataFrame, copula_meta: dict, copula_arrays: dict,
-                     label: str) -> pd.DataFrame:
+                     label: str,
+                     force_continuous: tuple[str, ...] = ("mid_return",)) -> pd.DataFrame:
     """For copula models: forward-transform synth output to z-space and analyze.
 
     Schema (matches src/diffmm/data/copula_transform.py CopulaTransform.save):
@@ -303,6 +304,12 @@ def z_space_analysis(df: pd.DataFrame, copula_meta: dict, copula_arrays: dict,
       meta["discrete_features"]  — list of indices (these use z-score, not CDF)
       meta["ecdf_keys"]          — list of indices that have CDF arrays
       arrays[f"ecdf_{idx}"]      — sorted training values for column idx
+
+    `force_continuous` names features whose z-space stats we want even if they
+    are flagged as discrete in the copula metadata. mid_return is the canonical
+    case: it is zero-inflated (point mass at 0 → flagged discrete) but still
+    carries a meaningful continuous component whose z-collapse is the heart of
+    the v8/v9 copula story.
     """
     rows = []
     clip_q = copula_meta.get("clip_quantile", 0.001)
@@ -310,7 +317,7 @@ def z_space_analysis(df: pd.DataFrame, copula_meta: dict, copula_arrays: dict,
     discrete = set(copula_meta.get("discrete_features", []))
 
     for idx, fname in enumerate(feature_columns):
-        if idx in discrete:
+        if idx in discrete and fname not in force_continuous:
             continue
         if fname not in df.columns:
             continue

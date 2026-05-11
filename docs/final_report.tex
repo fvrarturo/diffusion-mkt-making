@@ -1,0 +1,660 @@
+\documentclass[journal]{IEEEtran}
+
+% Useful LaTeX packages
+\usepackage{cite}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+
+% ── Core packages (inherited from progress_reportv2.tex) ──
+\usepackage[utf8]{inputenc}
+\usepackage{titlesec}
+\usepackage[T1]{fontenc}
+\usepackage[margin=0.7in]{geometry}
+
+% ── Math ───────────────────────────────────────────────────────────────────
+\usepackage{amsmath, amssymb, amsthm, amsfonts, mathtools, bm}
+
+% ── Graphics, color, hyperlinks ────────────────────────────────────────────
+\usepackage{graphicx, subcaption}
+\usepackage{xcolor}
+\usepackage{cleveref}
+
+% ── Tables, lists, floats ──────────────────────────────────────────────────
+\usepackage{booktabs, multirow, array}
+\usepackage{caption}
+\usepackage{enumitem}
+\usepackage[most]{tcolorbox}
+
+% ── Algorithms ─────────────────────────────────────────────────────────────
+\usepackage{algorithm}
+\usepackage{amsmath,amssymb,amsthm,mathtools,bm}
+\usepackage{graphicx,xcolor,hyperref}
+\usepackage{algorithm,algpseudocode}
+\usepackage{booktabs,enumitem,caption,subcaption}
+\usepackage{fancyhdr} % Added for headers
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, fit, backgrounds, calc, decorations.pathreplacing}
+\usepackage{amsthm}
+\usepackage[most]{tcolorbox}
+\usepackage{xcolor}
+
+\newtcolorbox{summarybox}{colframe=red!70, boxrule=1.5pt, arc=4pt, left=2pt, right=2pt, top=3pt, bottom=3pt, halign=center}
+
+\hypersetup{colorlinks=true,linkcolor=blue!70!black,citecolor=green!50!black,urlcolor=blue!60!black}
+\setlist{nosep}
+
+% ── Macros ─────────────────────────────────────────────────────────────────
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\operatorname{Var}}
+\newcommand{\KL}{\operatorname{KL}}
+\newcommand{\Normal}{\mathcal{N}}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\rdiff}{\rho_{\text{diff}}}
+\newcommand{\rhist}{\rho_{\text{hist}}}
+
+
+\setlength{\headsep}{10pt}
+
+\theoremstyle{definition}   % roman body, bold header
+\newtheorem{definition}{Definition}
+
+\begin{document}
+% --- Improved Title Block ---
+\twocolumn[
+  \begin{center}
+    \vspace{1em}
+    {\large \bfseries Diffusion Models for Limit Order Book Generation \par}
+    \vspace{0.6em}
+    {\large \itshape On the Tension Between Distributional Realism, Temporal Transferability, and Multivariate Coverage \par}
+    \vspace{0.6em}
+    {\normalsize Arturo Favara, Maxime Vallot, Nick Bernardini \par}
+    \vspace{0.3em}
+    {\small Massachusetts Institute of Technology (15.458), Spring 2026 \par}
+    \vspace{1.5em}
+  \end{center}
+]
+
+\pagestyle{fancy}
+\fancyhf{} % Clear all headers and footers
+\fancyhead[L]{\small A. Favara, M. Vallot, N. Bernardini} % Left: Authors
+\fancyhead[C]{\small\thepage} % Center: Page
+\fancyhead[R]{\small 15.458, Spring 2026} % Right: Course
+
+% make the title area
+\titlespacing*{\section}{0pt}{1.2ex}{0.6ex}
+\titlespacing*{\subsection}{0pt}{1.0ex}{0.5ex}
+\titlespacing*{\subsubsection}{0pt}{0.8ex}{0.4ex}
+\titleformat{\paragraph}[runin]{\normalfont\bfseries}{}{0pt}{}
+\titlespacing{\paragraph}{0pt}{0.5ex}{1em}
+
+\thispagestyle{fancy} % Apply headers to title page
+\setlength{\parskip}{0pt}
+\setlist[itemize]{leftmargin=1.5em}
+\setlist[enumerate]{leftmargin=1.5em}
+
+% ══════════════════════════════════════════════════════════════════════════
+\begin{abstract}
+    
+Lorem ipsum
+\end{abstract}
+% ~250 words, non-technical. Audience: senior manager who knows finance but
+% not ML. Structure:
+%   1. What we did (one sentence).
+%   2. Why it matters (one sentence).
+%   3. How we did it (two sentences: 20 model variants, 3 evaluation
+%      frameworks, 3 stocks).
+%   4. What we found (two sentences: three-axis tension; no architecture
+%      wins on all three).
+%   5. Practical implication (one sentence: practitioners must choose).
+% No jargon. No acronyms. No math.
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Introduction and Motivation}
+\label{sec:intro}
+% ~2 pages. Narrative arc: PROBLEM → why GENERATIVE models → narrow to
+% DIFFUSION → state CONTRIBUTION.
+
+\subsection{The Backtesting Problem}
+\label{sec:backtest_problem}
+% Historical replay is non-responsive; the market doesn't react to the
+% agent's actions. Quote Berti et al. 2025 (TRADES). Synthetic generation
+% as the alternative.
+
+\subsection{Why Diffusion Models for LOBs}
+\label{sec:why_diffusion}
+% Brief history: GANs (Li 2020, Coletta 2021-2022) → mode collapse.
+% Diffusion (Ho 2020) → stable, mode-covering, flexible conditioning.
+% TRADES (Berti 2025) → first diffusion LOB generator.
+% Our starting point: fine-tune TRADES backbone on our pipeline.
+
+\subsection{Contributions}
+\label{sec:contributions}
+% Enumerate clearly:
+%   (i)   Systematic 20-architecture ablation across 5 design dimensions
+%   (ii)  Three-way tension: distributional realism vs temporal
+%         transferability vs multivariate coverage
+%   (iii) Tension is structural to MSE-based diffusion on heavy-tailed data
+%   (iv)  Agent-ranking metrics decoupled from all three quality dimensions
+%   (v)   Cross-asset validation on INTC (large tick), TSLA (small tick),
+%         SPY (ETF) testing INTC-specificity hypothesis.
+
+% Optional: visual abstract teaser of Figure 10.1 (rank-bump chart).
+
+\subsection{Paper Organization}
+\label{sec:organization}
+% One-sentence roadmap for each main section (total: 8), plus appendices.
+% Example structure:
+%   §2 describes the LOB data and its statistical properties.
+%   §3 presents the diffusion architecture and the five design axes we vary.
+%   §4 defines our three-axis evaluation framework.
+%   §5 presents the main results, including a copula case study (§5.7) that illustrates the tension most vividly.
+%   §6 examines agent-based stress testing.
+%   §7 validates cross-asset.
+%   §8 discusses implications.
+%   Appendices provide detailed results, model specifications, and ablation analyses.
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Data}
+\label{sec:data}
+% ~3 pages, deep and pedagogical. A reader who has never seen TAQ should
+% understand the LOB after this section.
+
+\subsection{Limit Order Book Mechanics}
+\label{sec:lob_mechanics}
+% What is a LOB: orders, levels, bid/ask, spread, midprice.
+% Event types: quote updates vs trades.
+% INTC as a large-tick stock; spread pinned at 1 tick; 89% of events
+% don't change the midprice. Why this is interesting AND pathological.
+%
+% FIGURE 3.1: "Anatomy of a Limit Order Book" (TikZ or matplotlib)
+
+\subsection{Data Source and Feature Engineering}
+\label{sec:data_source}
+% NYSE TAQ via WRDS: quotes + trades, nanosecond resolution.
+% LOBSTER reconstruction pipeline.
+% The 8-feature tensor: delta_t, event_type (discrete), bid_dist, ask_dist,
+% bid_sz, ask_sz, trade_sz, trade_sign, mid_return.
+% Normalization (z-score from training set).
+% Windowing (256-event non-overlapping) and stitching (10 windows →
+% 2,560-event pseudo-days).
+%
+% Closing paragraph: brief look at the empirical feature-correlation
+% structure as orientation for the reader (heavy diagonal,
+% mechanical bid_dist↔ask_dist anti-correlation, faint OFI→return
+% Spearman ≈ 0.07 — flagged here purely so it is recognisable when
+% it returns load-bearing in §5.7 and §6).
+%
+% FIGURE 2.1: Spearman correlation heatmap of the 8 features
+%             (was Fig 3.3 in earlier drafts).
+%
+% NOTE: The INTC zero-inflation pathology (point mass at mid_return = 0)
+% used to be its own §2.3 here. We removed it because it doesn't earn
+% its airtime until §5.7 (the copula story), which is the place the
+% pathology actually does load-bearing work. The first time the reader
+% sees a 0.89 frac-zero number is therefore in §5.7.1, where it
+% immediately motivates the failure mode being analysed.
+
+\subsection{Train / Validation / Holdout Split and Regime Labelling}
+\label{sec:splits}
+% 60 / 10 / 20 days. Regime labels: base, high_vol, toxic, thin
+% (per VPIN + realized vol bucketing). Why regime conditioning matters:
+% generator should produce stress scenarios, not average days.
+%
+% TABLE 3.1: Data split summary (days, events, period per ticker)
+
+\subsection{Stylized Facts of Financial Returns}
+\label{sec:stylized_facts}
+% Cont (2001) checklist:
+%   (i)   Heavy tails (kurtosis >> 3)
+%   (ii)  Volatility clustering (slow ACF decay of |returns|)
+%   (iii) Absence of return autocorrelation
+%   (iv)  Trade-sign persistence (positive lag-1 ACF)
+%   (v)   Volume-volatility correlation
+%   (vi)  Leverage effect
+% These become the G1 validation criteria (§4.4.1).
+%
+% FIGURE 3.4: Standalone real-INTC stylized fact panel
+%   (return histogram, |return| ACF, return ACF, trade-sign ACF,
+%    spread distribution, intraday volume U-shape).
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Methods --- Diffusion Model Architecture}
+\label{sec:methods}
+% ~4 pages. Start with DDPM basics (1 page, brief), then design space
+% (the 5 axes), then evaluation framework. Every architectural choice
+% gets an INTUITION before the math.
+
+\subsection{Denoising Diffusion Probabilistic Models}
+\label{sec:ddpm}
+% Forward process: gradual Gaussian noise. Reverse: learned denoising.
+% ε-prediction (Ho 2020). Training loss: MSE on predicted noise.
+% Keep BRIEF — 1 page max with references for depth.
+%
+% FIGURE 4.1: Forward/reverse process diagram
+% ALGORITHM 4.1: DDPM training pseudocode
+
+\subsection{The Architectural Design Space}
+\label{sec:design_space}
+% Introduce the 5 axes as a TABLE first, then explain each:
+%
+% TABLE 4.1: Axes × Options × What it controls
+%   - Prediction target:  ε, v, x_0
+%   - Conditioning:       FiLM, AdaLN-Zero
+%   - Preconditioning:    None, EDM
+%   - Data transform:     z-score, copula, copula+dequantization
+%   - Loss weighting:     Min-SNR γ ∈ {1, 5}, uniform
+
+\subsubsection{Prediction Target: $\eps$ vs $v$}
+\label{sec:pred_target}
+% INTUITION first.
+%   ε-pred: network learns the noise added → mode-covering, preserves
+%           bulk correlations, can't commit to extreme values.
+%   v-pred (Salimans & Ho 2022): predict √ᾱ ε − √(1-ᾱ) x_0 → uniform
+%           loss variance, better tail calibration, breaks cross-feature
+%           correlations.
+%
+% FIGURE 4.2: ε vs v target magnitude across noise levels.
+
+\subsubsection{Conditioning: FiLM vs AdaLN-Zero}
+\label{sec:conditioning}
+% FiLM (Perez 2018): affine modulation γ, β from regime embedding.
+% AdaLN-Zero (Peebles & Xie 2023, DiT): adaptive LayerNorm with zero
+% init → 6 modulation slots per block × N blocks vs FiLM's 4 slots.
+% Reference Work5's F.2 finding: FiLM modulation collapse.
+
+\subsubsection{Preconditioning: EDM (Karras et al.\ 2022)}
+\label{sec:edm}
+% σ-dependent input/output scaling that normalizes loss magnitudes
+% across noise levels. σ_data parameter calibration (v6/v7/v7_b sweep).
+% INTUITION: keep network's operating range comfortable at every σ.
+
+\subsubsection{Data Transform: z-score vs Copula}
+\label{sec:copula_transform}
+% z-score: subtract mean, divide by std. Standard, preserves relative
+% structure.
+% Copula (Sklar 1959): per-feature Gaussianization via empirical CDF
+% + Φ^{-1}. Diffusion learns dependence; tails restored at sampling.
+% Zero-inflation pathology: 89% point mass → CDF discontinuity →
+% z-collapse. Dequantization fix (Theis 2016).
+%
+% FIGURE 4.3: Copula pipeline diagram, with/without dequantization.
+% ALGORITHM 4.2: Copula transform with dequantization.
+
+\subsubsection{Loss Weighting: Min-SNR-$\gamma$ (Hang et al.\ 2023)}
+\label{sec:min_snr}
+% Weight per-step loss by min(SNR(t), γ)/SNR(t).
+% γ=5 (default) downweights low-noise; γ=1 over-corrects (falsified in
+% Phase A, see Appendix).
+
+\subsection{The 20 Trained Checkpoints}
+\label{sec:checkpoints}
+% TABLE 4.2: Full configuration matrix
+%   columns: Model, Prediction, Conditioning, EDM, Transform, γ, Clip, Notes
+
+\subsection{Evaluation Framework: The Three Axes}
+\label{sec:eval_framework}
+
+\subsubsection{Distributional Realism (G1)}
+\label{sec:eval_g1}
+% 16 stylized-fact checks (Cont 2001 + microstructure-specific).
+% Pass/fail per check, aggregate count. Measures: "does synthetic data
+% look like real market data?"
+
+\subsubsection{Temporal Pattern Transferability (Predictive Score)}
+\label{sec:eval_predictive}
+% Following TRADES (Berti 2025): train LSTM on synth, test on real,
+% measure MAE. Measures: "can downstream ML models learn useful patterns
+% from synthetic data?"
+
+\subsubsection{Multivariate Coverage (PCA Convex Hull)}
+\label{sec:eval_pca}
+% Per-tape feature vector → PCA → convex hull overlap with real.
+% Measures: "does synthetic data cover the full range of market states?"
+
+\subsubsection{Agent-Based Ranking ($\rdiff$) and Why It Decouples}
+\label{sec:eval_agents}
+% Avellaneda-Stoikov family agents; ρ_diff = Spearman correlation between
+% synth and holdout agent rankings. Flag immediately: §7 will show this
+% metric is decoupled from all three quality dimensions.
+%
+% FIGURE 4.4: Three-axis triangle diagram with example metrics per vertex.
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Results --- The Three-Axis Tension}
+\label{sec:results}
+% ~6-7 pages now (Copula Story merged in as §5.7). Three protagonists
+% (v2, v5, v9) tell the main story; full 20-checkpoint ablation explains
+% WHY; the copula case study (§5.7) is the most pedagogically rich
+% instance of "fixing one axis breaks another".
+
+% ── §5.0 PREAMBLE — define the three-axis table up-front ───────────────────
+% Open §5 by stating, in 1-2 paragraphs:
+%   (a) the three axes recapped from §3.4 (G1 = distributional realism,
+%       Predictive = temporal pattern transferability, PCA = multivariate
+%       state-space coverage),
+%   (b) why we present them as a JOINT comparison rather than separate sweeps:
+%       any single-axis "best generator" is misleading — the empirical claim
+%       of this paper is that the axes are anti-correlated across the 20
+%       trained checkpoints,
+%   (c) anchor TABLE 5.1 (multi-axis comparison, 20 rows × the four metrics
+%       we report most heavily: G1 / Pred×replay / PCA% / kurtosis / trade
+%       fraction) and FIGURE 5.1 (hero ternary).
+% A reader who only looks at §5's first page should already see the central
+% tension. Everything else in §5 (subsections 5.1-5.7) is "why and how".
+%
+% TABLE 5.1 (HERE, top of §5): full multi-axis comparison
+%             — produced by scripts/80_report_figures.py → tab_1_3_multi_axis.{csv,tex}
+% FIGURE 5.1 (HERO): three-axis evaluation space
+%             — produced by scripts/80_report_figures.py → fig_1_1_three_axis_scatter
+
+\subsection{Three Representative Generators}
+\label{sec:three_protagonists}
+% v2 (ε, FiLM, z-score): "safe baseline" — good temporal patterns, weak
+%                        tails.
+% v5 (v, AdaLN, z-score): "heavy-tail champion" — kurtosis 1256, breaks
+%                         correlations.
+% v9 (ε, FiLM, copula+dequant): "distributional realist" — perfect trade
+%                                fraction, best vol clustering, poor
+%                                temporal transferability.
+%
+% TABLE 5.1: Three-protagonist headline metrics
+% FIGURE 5.1 (HERO): Three-axis evaluation space (ternary plot)
+
+\subsection{Distributional Realism Results}
+\label{sec:res_g1}
+% G1 16-check matrix. Return tail (log-log CDF). Trade-fraction bar.
+% Per-feature violins for the three protagonists.
+%
+% FIGURE 5.2: G1 pass/fail heatmap (16 × 20)
+% FIGURE 5.3: Return tail comparison (log-log CDF)
+% FIGURE 5.4: Trade fraction bar chart (real reference line)
+% TABLE 5.2: Full G1 results for v2, v5, v9 (with real)
+
+\subsection{Temporal Transferability Results}
+\label{sec:res_predictive}
+% Predictive score across all 20 models.
+% The surprise: scale-exploded models (v3_e9_noclip, std 4×) BEAT
+% scale-matched models (v9, std 0.6×) on predictive MAE.
+% ACF comparison showing temporal structure preservation.
+%
+% FIGURE 5.5: Predictive score bar chart
+% FIGURE 5.6: ACF grid — real vs v2 vs v9
+% TABLE 5.3: Predictive score for all 20 models
+
+\subsection{Multivariate Coverage Results}
+\label{sec:res_pca}
+% PCA scatter + convex hulls. v8 (copula no dequant) → 85% coverage
+% despite 8/15 G1 (coverage ≠ realism). v2_noclip → 0% coverage despite
+% 4× predictive score.
+%
+% FIGURE 5.7: PCA coverage panels (4 representative models)
+
+\subsection{The Anti-Correlation Across Architectures}
+\label{sec:res_anticorrelation}
+% Pairwise scatter of evaluation metrics across 20 checkpoints.
+% Spearman ρ matrix between metrics. NOT cherry-picked; systematic
+% across every architectural axis.
+%
+% FIGURE 5.8: Pairwise anti-correlation scatter (G1 vs Pred vs PCA)
+% TABLE 5.4: Metric correlation matrix (Spearman)
+
+\subsection{Architectural Ablation: What Drives What}
+\label{sec:res_ablation}
+% Per-axis effect on per-metric:
+%   ε → v:           improves kurtosis, degrades predictive score
+%   remove x0_clip:  dramatically improves predictive, destroys G1
+%   add copula:      improves PCA + trade fraction, degrades predictive
+%   FiLM → AdaLN:    negligible effect on most metrics
+%
+% FIGURE 5.9: Ablation impact heatmap (axes × metrics)
+% FIGURE 5.10: The x0_clip effect (paired bar chart)
+
+\subsection{Case Study: The Copula Story --- One Architecture, All Three Axes Move}
+\label{sec:copula_story}
+% Was its own §6 in earlier drafts; merged in here because it is the
+% single most pedagogically rich instance of the §5 tension. Each of
+% v8, v9, v2_remapped moves all three axes (G1, Pred, PCA) at once,
+% and reading them in sequence makes the structural mechanism obvious.
+% Approx 1-1.5 pages of the §5 budget.
+%
+% Also folds in the zero-inflation pathology that earlier drafts tried
+% to introduce in §2: the empirical 89% point mass at mid_return = 0
+% is the technical root cause of the copula failure, and earns its
+% airtime here where it actually does load-bearing work.
+
+\subsubsection{The Zero-Inflation Pathology (Why a Naive Copula Was Always Going to Fail)}
+\label{sec:copula_zero_inflation}
+% INTC mid_return: 89% exactly zero — point mass + continuous heavy tail.
+% Conditional on nonzero: kurtosis ~56, std ~6.8e-5, skew ~-0.17.
+% Why this matters HERE (not in §2): the empirical CDF used by the copula
+% transform has a discontinuity at 0 that maps 89% of training data to a
+% single z-value, so the diffusion model trained on that z-space gets
+% degenerate inputs.
+%
+% FIGURE 5.11: Three-panel histogram (INTC mid_return, TSLA mid_return,
+%              INTC mid_return | mid_return ≠ 0).
+%              Was Fig 3.2 in earlier drafts.
+
+\subsubsection{The Promise: Marginals from Inverse CDF, Joints from Diffusion}
+\label{sec:copula_promise}
+% Copula theory (Sklar): separate marginals from dependence. Predicted
+% outcome: kurtosis 400-800, ρ_diff ≥ +0.40.
+
+\subsubsection{The Failure (v8): z-Space Collapse}
+\label{sec:copula_failure}
+% mid_return z-mean = -2.55, z-std = 0.30. Root cause: CDF discontinuity
+% at the 89% point mass (§5.7.1). Kurtosis: 2.6 (not 400-800).
+
+\subsubsection{The Fix (v9): Dequantization}
+\label{sec:copula_fix}
+% Standard normalizing-flow technique (Theis 2016). Spread the point
+% mass uniformly before CDF computation. Result: frac_zero recovered
+% (0.99 vs real 0.89), kurtosis 129, trade fraction 4.9%.
+
+\subsubsection{The Deeper Lesson: Spearman $\neq$ Economic Information}
+\label{sec:copula_lesson}
+% v9: excellent distributional realism, poor temporal transferability.
+% Round-trip (Gaussianize → train → sample → inverse) adds noise that
+% scrambles temporal micro-patterns the LSTM relies on.
+% v2_remapped (post-hoc quantile mapping of v2): perfect Spearman
+% preservation, 265× predictive score, ρ_diff flipped from +0.40 to
+% −0.40. Spearman invariance is mathematically correct but
+% economically insufficient.
+%
+% FIGURE 5.12: z-space before/after dequantization
+% FIGURE 5.13: Zero-inflation CDF visualization (was Fig 6.2)
+% FIGURE 5.14: v2 vs v9 metric comparison (grouped bars)
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Agent-Based Stress Testing}
+\label{sec:agents}
+% ~2 pages. Punchline: ρ_diff is decoupled from distributional quality
+% for a specific, structural reason.
+
+\subsection{Agent Design --- The Avellaneda-Stoikov Family}
+\label{sec:agent_design}
+% Brief AS framework (1 paragraph + reservation-price equation).
+% A0 (constant), A1 (AS baseline), A2 (AS+OFI), A3 (AS+VPIN).
+% Fill simulator: order matching against synthetic book.
+
+\subsection{The Ranking Mechanism --- A1/A2 Are Indistinguishable}
+\label{sec:ranking_mechanism}
+% A1 and A2 economically indistinguishable (effect size < 0.3 on every
+% metric). The "correct" A2 > A1 ordering driven by fill-rate
+% differences, not return prediction. OFI→return R² = 0.0001 — the
+% signal A2 uses is noise-level.
+
+\subsection{$\rdiff$ Is Decoupled From Distributional Quality}
+\label{sec:rdiff_decoupled}
+% v8 (worst marginals): ρ_diff = +0.80
+% v9 (best marginals):  ρ_diff = -0.80
+% v2_remapped (perfect Spearman preservation): ρ_diff = -0.40
+% Scatter shows no correlation with G1, predictive, or PCA.
+%
+% FIGURE 7.1: Agent PnL overlap (A0/A1/A2/A3 boxplots on truth)
+% FIGURE 7.2: ρ_diff vs everything (4-panel scatter)
+% TABLE 7.1: Agent decomposition — what actually separates A1 from A2
+
+\subsection{Implications for Agent-Based Synthetic Stress Testing}
+\label{sec:agent_implications}
+% Agent-ranking evaluation requires LARGE, STABLE performance gaps.
+% Our 4 agents are too similar. ρ_diff measures fill-timing noise,
+% not generator quality. This is a finding, not a failure — it tells
+% practitioners what NOT to do with synthetic stress tests.
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Cross-Asset Validation: INTC, TSLA, SPY}
+\label{sec:cross_asset}
+% ~1.5-2 pages. Tests whether the three-axis tension is structural or
+% INTC-specific.
+
+\subsection{Why Cross-Asset?}
+\label{sec:why_cross}
+% If the tension persists on TSLA (small tick) and SPY (ETF), it's
+% structural. If not, it's an INTC zero-inflation artifact.
+
+\subsection{TSLA --- Small-Tick Single Name}
+\label{sec:tsla}
+% Smaller relative tick, ~80% zero-return rate (vs INTC's 89%), more
+% continuous returns. Tests whether the ε vs v kurtosis gap shrinks
+% under less zero-inflation.
+%
+% TABLE 8.1: v2 vs v5 on TSLA — three-axis comparison
+
+\subsection{SPY --- Index-Tracking ETF}
+\label{sec:spy}
+% Deep liquidity, tight spreads, index-arbitrage-driven price
+% discovery. Tests whether the tension persists in a qualitatively
+% different microstructure regime.
+%
+% TABLE 8.2: v2 vs v5 on SPY — three-axis comparison
+
+\subsection{Cross-Asset Findings: Structural or Microstructure-Specific?}
+\label{sec:cross_findings}
+% Six data points (3 tickers × 2 architectures). Does v2 still beat v5
+% on predictive across tickers? Does the trade-fraction divergence
+% replicate? Plot the three-axis ternary with all 6 points.
+%
+% FIGURE 8.1: Cross-ticker three-axis ternary
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Discussion}
+\label{sec:discussion}
+% ~1.5 pages.
+
+\subsection{The Three-Axis Tension as a Structural Result}
+\label{sec:disc_structural}
+% Why this happens: MSE is per-element, per-timestep. Cannot
+% simultaneously optimize marginal shape AND cross-feature/temporal
+% correlations. Connects to broader mode-covering vs mode-seeking
+% diffusion literature.
+
+\subsection{Practical Implications for Practitioners}
+\label{sec:disc_practical}
+% Choose generator by use case:
+%   - Train downstream ML → prioritize predictive transferability
+%     (use noclip / scale-exploded variants).
+%   - Regulatory distributional stress test → prioritize G1
+%     (use v2 or v5).
+%   - Diverse scenario coverage → prioritize PCA (use copula).
+% No one-size-fits-all answer.
+
+\subsection{Limitations}
+\label{sec:limitations}
+% (i)   Single backbone (TRADES transformer); U-Net, SSM untested.
+% (ii)  INTC-dominant (zero-inflation pathology); TSLA/SPY qualify.
+% (iii) 20 holdout days insufficient for stable agent rankings.
+% (iv)  Predictive score is LSTM-architecture-dependent.
+
+\subsection{Future Work}
+\label{sec:future_work}
+% (i)   Autoregressive diffusion (event-by-event) might avoid
+%       marginals-vs-joints tension.
+% (ii)  Mixture-of-experts: ε-pred for bulk + v-pred head for tails.
+% (iii) Direct distributional loss (MMD, Wasserstein) instead of MSE.
+% (iv)  More agents with diverse strategies; longer holdout periods.
+
+% ══════════════════════════════════════════════════════════════════════════
+\section*{AI Disclosure}
+\label{sec:ai_disclosure}
+\addcontentsline{toc}{section}{AI Disclosure}
+% "We used Claude (Anthropic) extensively as a research collaborator
+% throughout this project for architectural design, experiment planning,
+% diagnostic analysis, code generation, and report drafting. All final
+% decisions, code execution, experimental results, and interpretations
+% are our own. Claude's recommendations were frequently wrong (e.g., the
+% copula kurtosis prediction) and we report negative results honestly."
+
+% ══════════════════════════════════════════════════════════════════════════
+\bibliographystyle{plain}
+% \bibliography{references}
+\section*{References}
+\label{sec:references}
+\addcontentsline{toc}{section}{References}
+% Minimum citations:
+%   Ho et al. 2020 (DDPM)
+%   Song et al. 2020 (DDIM)
+%   Salimans & Ho 2022 (v-prediction)
+%   Karras et al. 2022 (EDM)
+%   Peebles & Xie 2023 (DiT / AdaLN-Zero)
+%   Perez et al. 2018 (FiLM)
+%   Berti et al. 2025 (TRADES)
+%   Cont 2001 (stylized facts)
+%   Cont, Kukanov, Stoikov 2014 (OFI)
+%   Avellaneda & Stoikov 2008 (market making)
+%   Sklar 1959 (copula)
+%   Theis et al. 2016 (dequantization for normalizing flows)
+%   Hang et al. 2023 (Min-SNR weighting)
+%   Nichol & Dhariwal 2021 (improved DDPM)
+%   Li et al. 2020 (LOB GAN)
+%   Coletta et al. 2021, 2022 (LOB GAN follow-ups)
+
+% ══════════════════════════════════════════════════════════════════════════
+\appendix
+\section{Full G1 Value Matrix}
+\label{app:g1_matrix}
+% 16 × 20 actual-values table (not just pass/fail).
+
+\section{All 20 Checkpoint Configurations}
+\label{app:checkpoints}
+% Detailed hyperparameters per model.
+
+\section{Per-Feature Deep Diagnostic}
+\label{app:deep_diagnostic}
+% Output of scripts/60_deep_diagnostic.py for v2, v5, v9.
+
+\section{Copula Transform Implementation}
+\label{app:copula_impl}
+% Dequantization algorithm; ε computation; per-feature treatment.
+
+\section{Agent Implementation Details}
+\label{app:agents_impl}
+% Avellaneda-Stoikov parameters; fill simulator semantics; calibration.
+
+\section{Predictive Score LSTM Details}
+\label{app:lstm_details}
+% Architecture, training curves, hyperparameter sensitivity.
+
+\section{Additional Mid-Price Traces}
+\label{app:traces}
+% All 20 models, 2,560-event traces, normalized.
+
+\section{Volume-Volatility Correlation Distributions}
+\label{app:vol_vol}
+% Per-tape KDE plots across model groups.
+
+\section{Phase A Falsification --- Min-SNR $\gamma$ Misadventure}
+\label{app:phaseA}
+% Cautionary log: γ=1 hypothesis was directionally wrong; documented
+% lesson on hyperparameter mathematical structure.
+
+\section{Reproducer Commands}
+\label{app:reproducer}
+% Exact cluster commands (sbatch invocations) per checkpoint.
+
+\end{document}

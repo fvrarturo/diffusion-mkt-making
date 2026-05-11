@@ -326,6 +326,26 @@ def compute_pca_coverage(real_vecs: np.ndarray, synth_vecs_by_model: dict[str, n
     fig.savefig(f"{out_dir}/pca_coverage.pdf")
     fig.savefig(f"{out_dir}/pca_coverage.png", dpi=120)
     plt.close(fig)
+
+    # Persist per-tape projections so downstream report figures can re-render
+    # the 4-panel scatter+hull view without re-fitting PCA.
+    proj_rows: list[dict] = []
+    for i, (rx, ry) in enumerate(real_pc):
+        proj_rows.append({"model": "real", "tape_idx": i,
+                          "pc1": float(rx), "pc2": float(ry)})
+    for label, vecs in synth_vecs_by_model.items():
+        if len(vecs) < 4:
+            continue
+        z = (vecs - mean) / std
+        pc = pca.transform(z)
+        for i, (px, py) in enumerate(pc):
+            proj_rows.append({"model": label, "tape_idx": i,
+                              "pc1": float(px), "pc2": float(py)})
+    if proj_rows:
+        pd.DataFrame(proj_rows).to_csv(
+            f"{out_dir}/pca_projections.csv", index=False)
+        print(f"  wrote pca_projections.csv  "
+              f"({len(proj_rows)} rows across {len(synth_vecs_by_model) + 1} models)")
     return results
 
 
