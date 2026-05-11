@@ -256,6 +256,8 @@ def main(cfg: DictConfig) -> None:
 
     ckpt_dir = Path(cfg.cluster.checkpoint_root) / cfg.experiment_name
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # Per-epoch monitored checkpoint (the default — keeps top-k by val/loss)
     callbacks = [
         ModelCheckpoint(
             dirpath=ckpt_dir,
@@ -274,6 +276,28 @@ def main(cfg: DictConfig) -> None:
             patience=cfg.generator.training.early_stopping_patience,
         ),
     ]
+
+    # Optional step-based safety-net checkpoint. Set
+    # `+generator.checkpointing.every_n_train_steps=N` to also write an
+    # unmonitored snapshot every N optimizer steps. Critical for chained 6h
+    # jobs on big-data tickers like SPY where a full epoch doesn't fit in
+    # the per-job time budget — without this we get zero saves on TIMEOUT.
+    every_n_steps = cfg.generator.checkpointing.get("every_n_train_steps", 0)
+    if every_n_steps and int(every_n_steps) > 0:
+        callbacks.append(
+            ModelCheckpoint(
+                dirpath=ckpt_dir,
+                # Distinct filename so it doesn't collide with the per-epoch
+                # save_top_k pruning above. step{step:08d} ⇒ ckpt-step00010000.ckpt
+                filename="ckpt-step{step:08d}",
+                every_n_train_steps=int(every_n_steps),
+                save_top_k=-1,        # keep ALL step snapshots; we trim later
+                save_last=True,       # also keep a stable "last.ckpt" for resume
+                auto_insert_metric_name=False,
+            )
+        )
+        log.info("step-based checkpoint snapshots enabled: every %d steps",
+                 int(every_n_steps))
 
     from pytorch_lightning.loggers import CSVLogger
     loggers: list = [CSVLogger(

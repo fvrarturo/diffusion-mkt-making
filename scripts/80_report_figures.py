@@ -140,15 +140,43 @@ def load_multi_axis() -> pd.DataFrame:
     df = pd.read_csv(ARCHIVE / "multi_axis_comparison.csv")
     return df
 
+# Per-check real reference values (used by the numeric-error heatmap, fig_2_1).
+# Anything not in this map is left as NaN — the heatmap will mask those rows.
+G1_REAL_VALUES = {
+    "Return W-1":                    0.0,
+    "Spread W-1":                    0.0,
+    "Return excess kurtosis":        REAL_REF["kurtosis"],            # 755
+    "Spread 1-tick fraction":        REAL_REF["spread_1tick_frac"],   # 0.95
+    "Trade fraction (synth vs real)":REAL_REF["trade_fraction"],      # 0.0477
+    "ACF(|r|) lag-50 deviation":     0.0,
+    "ACF(|r|) power-law":            REAL_REF["acf_beta"],            # 0.21
+    "Trade-sign lag-1 ACF sign":     REAL_REF["trade_sign_acf_lag1"], # 0.675
+    "Return lag-1 ACF":              0.0,                             # ~0 expected
+    "RV signature shape":            0.0,                             # ratio diff
+    "E[r|I] sign at =10":            3.68e-05,
+    "E[r|I] sign at =50":            REAL_REF["ofi_slope_delta50"],   # 1.107e-04
+    "Joint spread-imbalance JSD":    0.0,
+    "Conditional moments (|z|<2)":   0.0,
+    "Crossed books rate (decode)":   0.0,
+    "Size tail exponent":            1.567,
+}
+
+
 def load_g1_long() -> pd.DataFrame:
-    """Load G1 matrix and pivot into a long format suitable for the heatmap."""
+    """Load G1 matrix and pivot into a long format suitable for the heatmap.
+
+    Returns long-format frame with columns:
+      check, model, pass, value, real_value
+    where `real_value` is the per-check real reference (NaN for checks not in
+    G1_REAL_VALUES). The numeric-error heatmap (fig_2_1) computes
+    error = |value - real_value|; checks with NaN real_value are masked out.
+    """
     raw = pd.read_csv(ARCHIVE / "G1_comparison_all_models.csv")
     pass_cols = [c for c in raw.columns if c.endswith("_pass")]
     val_cols  = [c for c in raw.columns if c.endswith("_value")]
     long_pass = raw.melt(id_vars=["check"], value_vars=pass_cols,
                          var_name="model", value_name="pass")
     long_pass["model"] = long_pass["model"].str.replace("_pass$", "", regex=True)
-    # Coerce True/False (could be bool or string "True"/"False") to 0/1 floats
     long_pass["pass"] = long_pass["pass"].map(
         lambda v: 1.0 if (v is True or str(v).strip().lower() == "true")
                   else 0.0 if (v is False or str(v).strip().lower() == "false")
@@ -157,7 +185,13 @@ def load_g1_long() -> pd.DataFrame:
     long_val = raw.melt(id_vars=["check"], value_vars=val_cols,
                         var_name="model", value_name="value")
     long_val["model"] = long_val["model"].str.replace("_value$", "", regex=True)
+    # Some checks store descriptive strings instead of pure numerics (e.g.
+    # "real=0.675, synth=0.348"); coerce to float, mark as NaN otherwise.
+    long_val["value"] = pd.to_numeric(long_val["value"], errors="coerce")
     out = long_pass.merge(long_val, on=["check", "model"])
+    # Drop the TOTAL_PASS aggregate row (not a check, breaks the heatmap)
+    out = out[out["check"] != "TOTAL_PASS"].copy()
+    out["real_value"] = out["check"].map(G1_REAL_VALUES).astype(float)
     return out
 
 def load_predictive() -> pd.DataFrame:
@@ -243,7 +277,6 @@ def fig_1_1_three_axis_scatter(matrix: pd.DataFrame, pred: pd.DataFrame,
             "pred_inv": 1.0 / pr,
             "pca_pct": pc if pd.notna(pc) else 0.0,
             "color": MODEL_COLORS[m],
-            "marker": MODEL_MARKERS[m],
         })
     if not rows:
         print("[fig_1_1] no data — skipped")
@@ -253,25 +286,65 @@ def fig_1_1_three_axis_scatter(matrix: pd.DataFrame, pred: pd.DataFrame,
     pts["pred_score"] = (pts["pred_inv"] - pts["pred_inv"].min()) / \
                        (pts["pred_inv"].max() - pts["pred_inv"].min() + 1e-12)
 
+    # Calculate optimal label positions to avoid overlaps
+    # We'll use adjust_text if available, otherwise fallback to offsetting
+    try:
+        from adjustText import adjust_text
+        use_adjust_text = True
+    except ImportError:
+        use_adjust_text = False
+
     fig, ax = plt.subplots(figsize=(9, 7))
+    texts = []
+
     for _, r in pts.iterrows():
         size = 80 + 7 * r["pca_pct"]   # 80–800 area pts
+        # All circles (marker="o")
         ax.scatter(r["g1_norm"], r["pred_score"], s=size, c=r["color"],
-                   marker=r["marker"], edgecolors="k", linewidths=0.6,
+                   marker="o", edgecolors="k", linewidths=0.6,
                    alpha=0.85, label=r["model"])
-        ax.annotate(r["model"], (r["g1_norm"], r["pred_score"]),
-                    xytext=(5, 5), textcoords="offset points",
-                    fontsize=8, alpha=0.9)
+        # Add text objects for later adjustment
+        t = ax.annotate(
+            r["model"],
+            (r["g1_norm"], r["pred_score"]),
+            xytext=(5, 5), textcoords="offset points",
+            fontsize=8, alpha=0.9
+        )
+        texts.append(t)
+
+    # Add real at (1, 1) as a circle, with 100% PCA
+    real_size = 80 + 7 * 100.0  # 80–800 pts, assuming 100% coverage for real
+    ax.scatter([1.0], [1.0], s=real_size, c="black", marker="o", edgecolors="k", linewidths=0.9, alpha=0.95, zorder=5, label="real")
+    ax.annotate("REAL", (1.0, 1.0), xytext=(8, -2),
+                textcoords="offset points", fontsize=10, fontweight="bold")
+
+    # Adjust label positions to prevent overlapping
+    if use_adjust_text and texts:
+        # Use adjust_text for auto label placement
+        from adjustText import adjust_text
+        adjust_text(
+            texts,
+            only_move={'points':'y', 'texts':'y'},
+            arrowprops=dict(arrowstyle="-", color='gray', lw=0.5, alpha=0.7),
+            ax=ax,
+            expand_text=(1.05, 1.3),
+            expand_points=(1.07, 1.35),
+            force_text=0.8,
+            force_points=0.15,
+            lim=30
+        )
+    # Otherwise, labels will be slightly offset but may still overlap
+
     ax.set_xlabel("Distributional Realism (G1 pass fraction)")
     ax.set_ylabel("Temporal Transferability (1 / ×replay, min-max scaled)")
     ax.set_title("Three-Axis Evaluation Space\n"
                  "(point area $\\propto$ PCA convex-hull coverage)",
                  pad=12)
-    # Real reference at (1, 1, 100%)
-    ax.scatter([1.0], [1.05], marker="*", s=400, c="black", zorder=5,
-               label="real reference")
-    ax.annotate("REAL", (1.0, 1.05), xytext=(8, -2),
-                textcoords="offset points", fontsize=10, fontweight="bold")
+    # Remove the star marker for real reference (old code)
+    # ax.scatter([1.0], [1.05], marker="*", s=400, c="black", zorder=5,
+    #            label="real reference")
+    # ax.annotate("REAL", (1.0, 1.05), xytext=(8, -2),
+    #             textcoords="offset points", fontsize=10, fontweight="bold")
     # Group-color legend (right side)
     handles = [plt.Line2D([0], [0], marker="o", color="w",
                           markerfacecolor=c, markersize=10, label=g)
@@ -393,30 +466,114 @@ def fig_1_3_comparison_table(matrix: pd.DataFrame) -> None:
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 2 — Distributional Realism (G1)
 # ══════════════════════════════════════════════════════════════════════════
-def fig_2_1_g1_heatmap(g1: pd.DataFrame) -> None:
-    """16 × 20 pass/fail heatmap with values annotated."""
-    pivot = g1.pivot(index="check", columns="model", values="pass")
-    pivot = pivot.reindex(columns=ALL_MODELS).astype(float)
-    # Sort columns by total pass count desc
-    pivot = pivot.reindex(columns=pivot.sum(axis=0).sort_values(ascending=False).index)
-    # Sort rows by difficulty (fewest passers at top)
-    pivot = pivot.reindex(index=pivot.sum(axis=1).sort_values().index)
+def _fmt_g1(x: float) -> str:
+    """Compact formatter — fits scientific notation in tiny heatmap cells."""
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return "—"
+    a = abs(x)
+    if a == 0:
+        return "0"
+    if a < 1e-3 or a >= 1e4:
+        return f"{x:.2g}"
+    if a < 1:
+        return f"{x:.3g}"
+    return f"{x:.2f}"
 
-    cmap = LinearSegmentedColormap.from_list("pf", ["#d6443c", "#f5f5f5", "#3c8d40"])
-    fig, ax = plt.subplots(figsize=(16, 9))
-    sns.heatmap(pivot, cmap=cmap, vmin=0, vmax=1, cbar=False,
-                linewidths=0.5, linecolor="white",
-                annot=False, ax=ax)
-    # Annotate with pass count column-wise at the bottom
-    pass_count = pivot.sum(axis=0).astype(int)
-    ax.set_xticklabels([f"{m}\n({pass_count[m]}/{pivot.shape[0]})"
-                        for m in pivot.columns], rotation=45, ha="right")
+
+def fig_2_1_g1_heatmap(g1: pd.DataFrame) -> None:
+    """16 × 20 numerical-value heatmap with PER-ROW cross-sectional gradient.
+
+    Each cell shows the synth value (raw, not error). Color = how that cell's
+    error compares to the other models' errors WITHIN THE SAME ROW (greenest =
+    closest to real among the 20, reddest = farthest). A "★" prefix marks
+    cells that passed their criterion. A REAL column on the right shows the
+    reference value for each check.
+
+    Reading the figure:
+      • Look across one row (one stylized fact) → see which models are best/worst.
+      • Look down one column (one model) → see which checks the model handles
+        best/worst.
+      • Cross-section gradient is per-row, so checks whose values span 6 OoMs
+        (e.g. W-1 distances ~1e-6 vs kurtosis ~10³) remain comparable.
+    """
+    required = {"check", "model", "value", "real_value"}
+    missing = required.difference(g1.columns)
+    if missing:
+        raise ValueError(f"g1 must contain {required} (missing: {missing})")
+
+    g1 = g1.copy()
+    # Drop checks with no numeric synth value (validator emits free-text).
+    g1 = g1[~g1["check"].isin({"Conditional moments (|z|<2)"})]
+    # Per-cell absolute error from the per-row real reference
+    g1["error"] = (g1["value"] - g1["real_value"]).abs()
+
+    val_pivot = g1.pivot(index="check", columns="model", values="value")
+    err_pivot = g1.pivot(index="check", columns="model", values="error")
+    pass_pivot = g1.pivot(index="check", columns="model", values="pass")
+    real_series = g1.dropna(subset=["real_value"]).groupby("check")["real_value"].first()
+
+    model_cols = [m for m in ALL_MODELS if m in val_pivot.columns]
+    val_pivot = val_pivot[model_cols]
+    err_pivot = err_pivot[model_cols]
+    pass_pivot = pass_pivot[model_cols]
+
+    # Per-row min-max normalize errors → [0, 1]; rows with all-NaN errors
+    # (no real reference) get masked.
+    err_norm = err_pivot.copy()
+    for chk in err_norm.index:
+        row = err_norm.loc[chk].astype(float).values
+        finite = row[np.isfinite(row)]
+        if len(finite) == 0:
+            err_norm.loc[chk] = np.nan
+            continue
+        lo, hi = finite.min(), finite.max()
+        if hi - lo < 1e-15:
+            err_norm.loc[chk] = 0.0
+        else:
+            err_norm.loc[chk] = (row - lo) / (hi - lo)
+
+    # Sort rows by mean per-row error rank (best-overall checks at top)
+    err_norm["_mean"] = err_norm.mean(axis=1, skipna=True)
+    err_norm = err_norm.sort_values("_mean").drop(columns="_mean")
+    val_pivot = val_pivot.reindex(err_norm.index)
+    pass_pivot = pass_pivot.reindex(err_norm.index)
+
+    # Annotation grid: raw synth value only (cleaner — no pass-marker clutter)
+    annot = pd.DataFrame(index=val_pivot.index, columns=val_pivot.columns, dtype=object)
+    for chk in val_pivot.index:
+        for col in val_pivot.columns:
+            annot.loc[chk, col] = _fmt_g1(val_pivot.loc[chk, col])
+
+    # Add REAL column on the right for visual reference
+    REAL_COL = "REAL"
+    err_norm[REAL_COL] = 0.0
+    annot[REAL_COL] = real_series.reindex(err_norm.index).map(_fmt_g1)
+    val_pivot[REAL_COL] = real_series.reindex(err_norm.index).fillna(np.nan)
+
+    cmap = LinearSegmentedColormap.from_list(
+        "g_to_r", ["#1a7d3a", "#7fc97f", "#f5f5dc", "#fdae61", "#d73027"])
+
+    fig, ax = plt.subplots(figsize=(max(11, len(err_norm.columns) * 0.7), 9))
+    sns.heatmap(
+        err_norm, cmap=cmap, vmin=0, vmax=1,
+        cbar_kws={"label": "per-row error (0 = best in row, 1 = worst in row)",
+                  "shrink": 0.6},
+        linewidths=0.5, linecolor="white",
+        annot=annot, fmt="", annot_kws={"fontsize": 7},
+        mask=err_norm.isna(),
+        ax=ax,
+    )
+    # Visual divider before the REAL column
+    ax.axvline(len(model_cols), color="black", linewidth=2)
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
     ax.set_xlabel("")
     ax.set_ylabel("")
-    ax.set_title("G1 Stylized-Fact Pass/Fail Matrix "
-                 "(green = pass, red = fail, sorted by difficulty/strength)",
-                 pad=12)
-    pdf, png = save_fig(fig, "fig_2_1_g1_heatmap")
+    ax.set_title(
+        "G1 Stylized-Facts — synth values with cross-sectional error gradient",
+        pad=12
+    )
+    fig.tight_layout()
+    pdf, png = save_fig(fig, "fig_2_1_g1_numerical_heatmap")
     _wrote(pdf, png)
     print(f"[fig_2_1] wrote {pdf.name}")
 
@@ -635,9 +792,77 @@ def fig_3_3_predictive_vs_scale(matrix: pd.DataFrame, pred: pd.DataFrame) -> Non
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 4 — PCA Coverage
 # ══════════════════════════════════════════════════════════════════════════
+def _pca_panels_4(proj: pd.DataFrame, pca: pd.DataFrame,
+                    panel_models: list[str]) -> None:
+    """4-panel TRADES Fig 2 style: real points + per-model synth points +
+    convex hulls, one panel per model in `panel_models`. Reads per-tape
+    projections from results/trades_metrics_all/pca_projections.csv (written
+    by the patched script 62)."""
+    real = proj[proj["model"] == "real"][["pc1", "pc2"]].to_numpy()
+    if len(real) < 4:
+        print("[fig_4_1] too few real PC points — falling back")
+        return
+    try:
+        real_hull = ConvexHull(real)
+    except Exception as e:
+        print(f"[fig_4_1] real hull failed: {e} — falling back")
+        return
+    cov_d = pca.set_index("model")["coverage_pct"].to_dict() \
+                if pca is not None else {}
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 12))
+    for ax, m in zip(axes.flat, panel_models):
+        s = proj[proj["model"] == m][["pc1", "pc2"]].to_numpy()
+        ax.scatter(real[:, 0], real[:, 1], c="0.4", s=10, alpha=0.45,
+                   label=f"real (n={len(real)})", zorder=1)
+        verts = list(real_hull.vertices) + [real_hull.vertices[0]]
+        ax.plot(real[verts, 0], real[verts, 1], "k--",
+                linewidth=1.3, alpha=0.7, label="real hull", zorder=2)
+        if len(s) >= 4:
+            color = MODEL_COLORS.get(m, "tab:red")
+            ax.scatter(s[:, 0], s[:, 1], c=color, s=12, alpha=0.55,
+                       marker="^", label=f"{m} (n={len(s)})", zorder=3)
+            try:
+                synth_hull = ConvexHull(s)
+                sv = list(synth_hull.vertices) + [synth_hull.vertices[0]]
+                ax.plot(s[sv, 0], s[sv, 1], color=color, linewidth=1.5,
+                        linestyle="--", alpha=0.85, zorder=4)
+            except Exception:
+                pass
+            cov = cov_d.get(m, np.nan)
+            ax.set_title(f"{m}  (coverage = {cov:.0f}%)" if pd.notna(cov)
+                         else f"{m}", fontsize=12)
+        else:
+            ax.set_title(f"{m}  (no projections)", fontsize=12)
+        ax.set_xlabel("PC1"); ax.set_ylabel("PC2")
+        ax.legend(fontsize=8, loc="upper right", framealpha=0.9)
+    fig.suptitle("PCA Convex-Hull Coverage (TRADES Fig 2 style) — "
+                 "real in gray, synth in color",
+                 fontsize=14, y=1.005)
+    fig.tight_layout()
+    pdf, png = save_fig(fig, "fig_4_1_pca_panels")
+    _wrote(pdf, png)
+    print(f"[fig_4_1] wrote {pdf.name} (4-panel scatter+hull)")
+
+
 def fig_4_1_pca_summary(pca: pd.DataFrame) -> None:
-    """Bar of PCA coverage % by model (we don't have raw projections per model
-    in this archive — fall back to a coverage summary)."""
+    """PCA coverage figure. Prefers the 4-panel scatter+hull view when
+    pca_projections.csv exists (after running the patched script 62 on
+    cluster + rsync back). Falls back to a coverage bar chart otherwise."""
+    proj_path = RESULTS / "trades_metrics_all" / "pca_projections.csv"
+    if proj_path.exists():
+        try:
+            proj = pd.read_csv(proj_path)
+            if "real" in proj["model"].unique():
+                panel_models = [m for m in ["v2", "v9", "v8", "v2_noclip"]
+                                if m in proj["model"].unique()]
+                if panel_models:
+                    _pca_panels_4(proj, pca, panel_models[:4])
+                    return
+        except Exception as e:
+            print(f"[fig_4_1] panel render failed ({e}) — falling back to bar")
+
+    # Fallback: bar chart of coverage %
     sub = pca[pca["model"].isin(ALL_MODELS)].sort_values("coverage_pct",
                                                            ascending=True)
     if sub.empty:
@@ -649,7 +874,8 @@ def fig_4_1_pca_summary(pca: pd.DataFrame) -> None:
     ax.axvline(100, color="black", linestyle="--", linewidth=1.5,
                label="real = 100%")
     ax.set_xlabel("PCA convex-hull coverage of real (%)")
-    ax.set_title("Multivariate state-space coverage (TRADES Fig 2 metric)",
+    ax.set_title("Multivariate state-space coverage  "
+                 "[bar fallback — pull pca_projections.csv for the 4-panel scatter+hull]",
                  pad=12)
     ax.legend(loc="lower right")
     for i, (m, v) in enumerate(zip(sub["model"], sub["coverage_pct"])):
@@ -657,7 +883,7 @@ def fig_4_1_pca_summary(pca: pd.DataFrame) -> None:
                     textcoords="offset points", va="center", fontsize=8)
     pdf, png = save_fig(fig, "fig_4_1_pca_coverage")
     _wrote(pdf, png)
-    print(f"[fig_4_1] wrote {pdf.name}")
+    print(f"[fig_4_1] wrote {pdf.name} (bar fallback)")
 
 
 def fig_4_2_pca_vs_g1(matrix: pd.DataFrame, pca: pd.DataFrame) -> None:

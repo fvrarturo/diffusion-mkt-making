@@ -333,66 +333,399 @@ Lorem ipsum
 % instance of "fixing one axis breaks another".
 
 % ── §5.0 PREAMBLE — define the three-axis table up-front ───────────────────
-% Open §5 by stating, in 1-2 paragraphs:
-%   (a) the three axes recapped from §3.4 (G1 = distributional realism,
-%       Predictive = temporal pattern transferability, PCA = multivariate
-%       state-space coverage),
-%   (b) why we present them as a JOINT comparison rather than separate sweeps:
-%       any single-axis "best generator" is misleading — the empirical claim
-%       of this paper is that the axes are anti-correlated across the 20
-%       trained checkpoints,
-%   (c) anchor TABLE 5.1 (multi-axis comparison, 20 rows × the four metrics
-%       we report most heavily: G1 / Pred×replay / PCA% / kurtosis / trade
-%       fraction) and FIGURE 5.1 (hero ternary).
-% A reader who only looks at §5's first page should already see the central
-% tension. Everything else in §5 (subsections 5.1-5.7) is "why and how".
-%
+% Goal: by end of page 1 of §5, the reader can already see the central
+% tension: no architecture wins all three axes. Everything that follows is
+% "why and how".
+
+We trained twenty diffusion-model variants on INTC limit order book data
+(Section~\ref{sec:checkpoints}), and evaluated each one on three independent
+quality axes recapped from Section~\ref{sec:eval_framework}: distributional
+realism (\textbf{G1}, sixteen stylized-fact pass/fail checks following
+\cite{cont2001stylized}), temporal pattern transferability
+(\textbf{predictive score}, an LSTM trained on synthetic data and tested
+on real, MAE expressed as a multiple of the market-replay baseline,
+following \cite{berti2025trades}), and multivariate state-space coverage
+(\textbf{PCA convex-hull intersection} with the real per-tape feature
+distribution).
+
+When we put all twenty checkpoints into the same comparison frame
+(Table~\ref{tab:multi_axis}, Figure~\ref{fig:hero_three_axis}), the pattern
+that emerges is the central empirical finding of this report: \textbf{no
+architecture optimizes all three axes simultaneously}. The model that
+matches real INTC's heavy tails best (v5, kurtosis $1257$ vs.\ real $755$)
+sits in the middle of the predictive-score ranking; the model that produces
+the most realistic trade fraction (v9, $0.049$ vs.\ real $0.048$) sits at
+the bottom of the predictive-score ranking ($106\times$ replay) despite
+covering the broadest PCA region of the three; and the architectures that
+dominate predictive transferability (v3\_e9\_noclip, $4\times$ replay; the
+single best of all twenty) cover \emph{zero percent} of real's PCA hull.
+The rest of \S\ref{sec:results} unpacks what each axis measures, where the
+twenty checkpoints land on it, and why the rankings disagree across axes.
+\S\ref{sec:res_anticorrelation} confirms that the disagreement is
+systematic rather than cherry-picked, and \S\ref{sec:copula_story} works
+through the copula case study, the single architectural family in which a
+sequence of three small fixes moves all three axes at once and makes the
+mechanism easy to read.
+
 % TABLE 5.1 (HERE, top of §5): full multi-axis comparison
 %             — produced by scripts/80_report_figures.py → tab_1_3_multi_axis.{csv,tex}
 % FIGURE 5.1 (HERO): three-axis evaluation space
 %             — produced by scripts/80_report_figures.py → fig_1_1_three_axis_scatter
+\input{../results/report_figures/tab_1_3_multi_axis.tex}
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.95\linewidth]{../results/report_figures/fig_1_1_three_axis_scatter.pdf}
+    \caption{\textbf{Hero figure --- three-axis evaluation space across our
+    twenty INTC diffusion-model variants.} Horizontal axis: distributional
+    realism (G1 pass fraction). Vertical axis: temporal transferability
+    ($1/\text{Pred}\times\text{replay}$, min--max scaled across the twenty
+    models so that a value of $1.0$ marks the best of our checkpoints, not
+    the real-data target). Point area is proportional to PCA convex-hull
+    coverage. Color encodes architectural family (blue = scale-accurate,
+    red = scale-exploded, green = copula, orange = special). The black star
+    at $(1, 1.05)$ marks where a perfect generator would sit. The two-step
+    visual reading: most points cluster well below the star
+    (no model is great on all axes), and within the cluster, no point is
+    simultaneously rightmost (best G1) and topmost (best predictive) and
+    largest (best PCA).}
+    \label{fig:hero_three_axis}
+\end{figure}
 
 \subsection{Three Representative Generators}
 \label{sec:three_protagonists}
-% v2 (ε, FiLM, z-score): "safe baseline" — good temporal patterns, weak
-%                        tails.
-% v5 (v, AdaLN, z-score): "heavy-tail champion" — kurtosis 1256, breaks
-%                         correlations.
-% v9 (ε, FiLM, copula+dequant): "distributional realist" — perfect trade
-%                                fraction, best vol clustering, poor
-%                                temporal transferability.
-%
-% TABLE 5.1: Three-protagonist headline metrics
-% FIGURE 5.1 (HERO): Three-axis evaluation space (ternary plot)
+
+To make the per-axis subsections readable, we anchor the rest of
+\S\ref{sec:results} on three protagonists drawn from architecturally
+orthogonal families. Each one is the best generator we built within its
+family, and each one occupies a different ``corner'' of the three-axis
+space.
+
+\begin{itemize}
+    \item \textbf{v2 --- the baseline} ($\eps$-prediction, FiLM
+    conditioning, z-score normalization). Closest direct fine-tune of the
+    TRADES backbone \cite{berti2025trades} on our preprocessed INTC tapes.
+    Lands at G1 $= 12/15$, predictive $= 14.2\times$ replay, PCA
+    $= 58.6\%$, kurtosis $= 122$ (against real $755$), trade fraction
+    $= 0.558$ (against real $0.048$). \textbf{Wins predictive
+    transferability among our three protagonists; weakest tails.}
+    \item \textbf{v5 --- the heavy-tail champion} ($v$-prediction,
+    AdaLN-Zero conditioning, z-score). G1 $= 13/15$, predictive
+    $= 10.7\times$, PCA $= 46.1\%$, kurtosis $= 1257$ (overshoots real),
+    trade fraction $= 0.552$. \textbf{Highest kurtosis of any generator;
+    pays for it with weaker PCA coverage and a degraded trade-sign
+    autocorrelation structure that \S\ref{sec:res_g1} exposes.}
+    \item \textbf{v9 --- the distributional realist} ($\eps$-prediction,
+    FiLM, copula transform with dequantization on the marginals).
+    G1 $= 12/15$, predictive $= 106.4\times$ replay, PCA $= 71.4\%$,
+    kurtosis $= 129$, trade fraction $= 0.049$ (essentially exact
+    match). \textbf{Wins trade-fraction realism and PCA coverage among
+    our three; the predictive-score collapse is a structural cost of the
+    copula round-trip that \S\ref{sec:copula_story} explains in
+    detail.}
+\end{itemize}
+
+The three rankings do not agree. v2 wins predictive but is the weakest
+on distributional shape. v5 wins on the single most-cited stylized fact
+(kurtosis), but its $v$-prediction objective does not translate into
+better state-space coverage or temporal transferability. v9 wins on the
+quantities a regulator might ask about (trade fraction, marginal shape,
+PCA coverage) but is so dominated by copula round-trip noise that the
+LSTM trained on its output is two orders of magnitude worse than market
+replay. The three protagonists thus form a small Pareto frontier: each
+is dominated by another on at least one axis, none is dominated on all.
+Figure~\ref{fig:rank_bump} makes this visible across all twenty
+checkpoints --- the line for each model crosses the others as you move
+from G1 to predictive to PCA, and no line stays at the top across all
+three columns.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.95\linewidth]{../results/report_figures/fig_10_1_rank_bump.pdf}
+    \caption{\textbf{Rank-bump chart across the three evaluation axes.}
+    Each line is one of the twenty INTC checkpoints; the y-axis is its
+    rank ($1 =$ best) on G1 (left), predictive score (middle), and PCA
+    coverage (right). Highlighted lines are the three protagonists
+    (v2/v5/v9) plus the two extreme outliers used in
+    \S\S\ref{sec:res_predictive}--\ref{sec:copula_story}: v2\_noclip
+    (best predictive, worst PCA) and v2\_remapped
+    (\S\ref{sec:copula_lesson} cautionary tale). Crossing lines visualize
+    the anti-correlation that the rest of the section quantifies.}
+    \label{fig:rank_bump}
+\end{figure}
 
 \subsection{Distributional Realism Results}
 \label{sec:res_g1}
-% G1 16-check matrix. Return tail (log-log CDF). Trade-fraction bar.
-% Per-feature violins for the three protagonists.
-%
-% FIGURE 5.2: G1 pass/fail heatmap (16 × 20)
-% FIGURE 5.3: Return tail comparison (log-log CDF)
-% FIGURE 5.4: Trade fraction bar chart (real reference line)
-% TABLE 5.2: Full G1 results for v2, v5, v9 (with real)
+
+The G1 suite is fifteen pass/fail checks of stylized facts in the
+\cite{cont2001stylized} family, plus one consistency check (no crossed
+books in the decoded synthetic stream). On the headline pass count, six
+of the twenty checkpoints reach $13/15$ (v3\_e9, v4, v4\_noclip, v5, v7,
+v7\_b), eight reach $12/15$, and the bottom of the table is the
+``noclip'' family --- v3p5\_noclip at $5/15$, v3\_e9\_noclip at $6/15$,
+v2\_noclip at $7/15$. We return to the noclip pattern in
+\S\ref{sec:res_predictive} because it is the most informative single
+trade-off in the whole study.
+
+The pass count is a coarse measure that hides the per-check magnitudes,
+so we also report the per-row numerical view in
+Figure~\ref{fig:g1_heatmap}: each cell is the actual synthetic value of
+that statistic, colored by how far it is from the real-data reference
+\emph{relative to the other nineteen models on the same row}. A row is
+green where the synthetic value is closest to real among the twenty,
+red where it is the furthest; this normalization is per-row so a
+Wasserstein distance at $10^{-6}$ scale and a kurtosis at $10^{3}$ scale
+are both readable.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\linewidth]{../results/report_figures/fig_2_1_g1_numerical_heatmap.pdf}
+    \caption{\textbf{G1 stylized-facts matrix --- synth values with
+    cross-sectional error gradient.} Fifteen rows are the G1 checks
+    (the ``Conditional moments'' check is dropped because its validator
+    emits a categorical label rather than a numeric value). Twenty
+    columns are the trained INTC checkpoints; the rightmost column
+    shows the real-data reference. Cell text is the actual synth value
+    for that (model, check) pair; cell color is the per-row min--max
+    normalized absolute error against real (greenest = closest to real
+    on that row, reddest = furthest). Rows are sorted by mean per-row
+    error rank, so the easiest checks are at the top and the hardest
+    at the bottom.}
+    \label{fig:g1_heatmap}
+\end{figure}
+
+Two findings dominate Figure~\ref{fig:g1_heatmap}. First, the
+\textbf{tail-shape row} (return excess kurtosis, real $755$) is the
+single highest-variance row: v5 sits at $1257$ (overshoot), v10\_cascade
+at $4124$ (extreme overshoot driven by a tiny $\sigma\!\approx\!10^{-6}$
+denominator), the central cluster (v3, v4, v6, v7, v9) at $\sim 70$--$190$,
+and the noclip family at $0$--$4$ (effectively no excess kurtosis ---
+the model collapsed to a near-Gaussian return distribution).
+v8's kurtosis of $2.6$ is the most dramatic collapse and the launch
+point for the copula case study in \S\ref{sec:copula_story}.
+
+Second, the \textbf{trade-fraction row} (real $0.048$, i.e.\ $\sim 4.8\%$
+of all events are trades; the remaining $95\%$ are quote updates) shows
+that almost every generator over-emits trades by an order of magnitude
+or more --- v2 sits at $0.558$, v3, v4, v6 at $0.45$--$0.78$, v5 at
+$0.55$. Only four checkpoints land within $2\times$ of real:
+\textbf{v9 at $0.049$} (essentially exact), v9\_b at $0.032$, v2\_remapped
+at $0.045$, and v7\_b at $0.156$. The first three of those are also the
+three checkpoints with the worst predictive scores in
+\S\ref{sec:res_predictive}; the fourth is the only ``zero-extra-trade''
+generator from the EDM family. We pull this thread further in
+Figure~\ref{fig:trade_fraction}, which sorts all twenty by distance from
+real's trade fraction and color-codes by distance.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.85\linewidth]{../results/report_figures/fig_2_4_trade_fraction.pdf}
+    \caption{\textbf{Trade fraction across the twenty INTC generators.}
+    Dashed line marks real's $0.0477$. Bars colored by distance from
+    real (green = close, red = far). The ``trade-fraction realists''
+    (v9, v9\_b, v2\_remapped, v7\_b) all share an architectural feature
+    that suppresses spurious trade events --- copula+dequant, post-hoc
+    quantile remapping, and EDM with $\sigma_\text{data}=1.5$
+    respectively. None of these architectures wins on predictive score;
+    \S\ref{sec:res_anticorrelation} shows the trade-off is systematic.}
+    \label{fig:trade_fraction}
+\end{figure}
+
+A complementary view of return-tail behavior is the cumulative tail
+probability at fixed $z$-thresholds (Figure~\ref{fig:return_tail}). For
+the three protagonists, real lies above all three at every threshold ---
+i.e.\ all three under-estimate the probability of large absolute
+returns at the $|z|=2,3,4$ standard-deviation marks --- but the gap
+narrows for v9 and v5 relative to v2. This says that the kurtosis
+overshoot in v5 and the trade-fraction-aligned v9 still produce
+\emph{lighter} tails than real, just by less. v2's curve drops fastest:
+even though its overall G1 pass count is only one short of v5, it is
+the protagonist that loses the tail-probability comparison most
+visibly, consistent with v2's role as the conservative ``mode-covering''
+$\eps$-prediction baseline.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.7\linewidth]{../results/report_figures/fig_2_3_return_tail.pdf}
+    \caption{\textbf{Tail probability $P(|r| > z\sigma)$ at the three
+    standard-deviation thresholds for which we have summary statistics.}
+    Log-y. Real INTC's tail at every threshold sits above v2, v5, and
+    v9; v2 drops fastest, consistent with its role as the
+    mode-covering baseline.}
+    \label{fig:return_tail}
+\end{figure}
 
 \subsection{Temporal Transferability Results}
 \label{sec:res_predictive}
-% Predictive score across all 20 models.
-% The surprise: scale-exploded models (v3_e9_noclip, std 4×) BEAT
-% scale-matched models (v9, std 0.6×) on predictive MAE.
-% ACF comparison showing temporal structure preservation.
-%
-% FIGURE 5.5: Predictive score bar chart
-% FIGURE 5.6: ACF grid — real vs v2 vs v9
-% TABLE 5.3: Predictive score for all 20 models
+
+The predictive score follows the TRADES protocol
+\cite{berti2025trades}: train an LSTM on synthetic windows, test on a
+held-out real window, report the ratio of test MAE to a market-replay
+baseline (an LSTM trained on real data). A perfect generator would land
+at $1.0$ --- the LSTM learns the same dynamics from synth as from real.
+Higher is worse; below the baseline (i.e.\ a synth-trained LSTM that
+\emph{outperforms} a real-trained one) is in principle possible but
+should not happen on a well-specified test split.
+
+The headline ranking surprised us, and is the main reason
+\S\ref{sec:res_anticorrelation} ends where it ends.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.7\linewidth]{../results/report_figures/fig_3_1_predictive_score.pdf}
+    \caption{\textbf{Predictive score across the twenty INTC
+    checkpoints, log scale.} Test MAE relative to market-replay
+    baseline ($1.0\times$, dashed). Lower is closer to the temporal
+    structure of the real data; higher means the LSTM trained on synth
+    transfers worse to real than an LSTM trained on real itself. The
+    three best generators on this axis (v3\_e9\_noclip $4.0\times$,
+    v2\_noclip $8.2\times$, v5 $10.7\times$) are also among the worst
+    on G1 (v3\_e9\_noclip and v2\_noclip both pass fewer than half of
+    the G1 checks). The five worst on this axis (v2\_remapped at
+    $266\times$, v8\_b $209\times$, v11 $130\times$, v8 $117\times$,
+    v9 $106\times$) are the four copula-family generators plus the
+    Spearman-remapped variant of v2.}
+    \label{fig:predictive_bar}
+\end{figure}
+
+The single most informative pair is v9 vs.\ v3\_e9\_noclip. v9 has the
+\emph{best} marginal-distribution match in our entire study (kurtosis
+$129$, trade fraction $0.049$, PCA $71.4\%$) and lands at predictive
+$=106.4\times$. v3\_e9\_noclip is a checkpoint we wrote off as broken
+in our internal tracking: it passes only $6/15$ G1 checks, its return
+distribution has near-zero excess kurtosis ($-0.43$, the model has
+collapsed to a smooth-tailed Gaussian), and its synthetic returns are
+roughly $43\times$ wider in standard deviation than real INTC's
+($\sigma_\text{synth} \approx 9.4 \times 10^{-4}$ vs.\ $\sigma_\text{real}
+\approx 2.2 \times 10^{-5}$). Yet it produces the best predictive
+score in the study at $4.0\times$ replay --- twenty-six times better
+than v9. Figure~\ref{fig:pred_vs_scale} pulls this contrast onto a
+single scatter.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.75\linewidth]{../results/report_figures/fig_3_3_predictive_vs_scale.pdf}
+    \caption{\textbf{Predictive score vs.\ synthetic return-scale ratio
+    (synth std / real std), both log.} If the predictive LSTM cared
+    primarily about getting return magnitudes right, the relationship
+    would be monotone with a minimum at $1.0$ on the x-axis. It is
+    not. The cluster of scale-matched models near $\sigma_\text{synth}
+    \approx \sigma_\text{real}$ (v2, v3, v3p5, v4, v5, v6, v7, v7\_b)
+    spans an entire order of magnitude on the y-axis ($10$--$36\times$
+    replay); the scale-exploded noclip models at $\sigma_\text{synth}
+    \approx 40\times \sigma_\text{real}$ sit at the \emph{bottom} of
+    the y-axis ($4$--$14\times$); and the copula family at
+    $\sigma_\text{synth} \approx 0.6\times \sigma_\text{real}$ sits at
+    the \emph{top} ($28$--$210\times$). Scale matching is neither
+    necessary nor sufficient for temporal transferability.}
+    \label{fig:pred_vs_scale}
+\end{figure}
+
+What the LSTM is picking up is not absolute return magnitude --- it is
+the per-event ordering and sign-correlation structure of the return
+sequence. Once we look through that lens the noclip dominance has a
+mechanical explanation: removing the $x_0$ output-clip lets the model
+emit return-sign sequences with realistic per-event variation, even
+though the marginal scale is wildly off; the copula family, by contrast,
+runs the per-feature distribution through an empirical-CDF round-trip
+that is essentially correct on marginals and Spearman ranks but
+introduces enough per-event noise to wash out the predictable structure
+the LSTM relies on. We exhibit this directly in the v2\_remapped
+cautionary tale in \S\ref{sec:copula_lesson}: post-hoc Spearman remapping
+of v2 preserves rank correlations \emph{exactly} and pushes predictive
+score from v2's $14\times$ to v2\_remapped's $266\times$, a near-twentyfold
+degradation purely from the rank-preserving shape change.
 
 \subsection{Multivariate Coverage Results}
 \label{sec:res_pca}
-% PCA scatter + convex hulls. v8 (copula no dequant) → 85% coverage
-% despite 8/15 G1 (coverage ≠ realism). v2_noclip → 0% coverage despite
-% 4× predictive score.
-%
-% FIGURE 5.7: PCA coverage panels (4 representative models)
+
+The PCA-coverage axis asks a different question from G1 and predictive
+score. We compute one feature vector per stitched 2,560-event tape (mean
+and std of each of the eight canonical features), z-score using the real
+training set's per-feature statistics, fit a 2-D PCA on the real tapes,
+project the synthetic tapes through the same PCA, and report the area
+of the intersection between the real convex hull and the synthetic
+convex hull, divided by the area of the real hull. A perfect generator
+matches real on this axis at $100\%$; a generator that produces tapes
+too tight or too wide to overlap with real lands at $0\%$.
+
+The fifteen models with finite (non-degenerate) projections sort
+into three regimes (Table~\ref{tab:pca_coverage_top}): the
+\emph{coverage-dominant} models that wrap around the real region with
+hulls one to two times bigger than real (v8, v10\_cascade), the
+\emph{coverage-realistic} models whose hulls are proportionate to
+real's $25.2$ unit-area (v9, v9\_b, v4\_noclip, v3\_e9, v7, v2, v4),
+and the \emph{coverage-thin} models whose hulls fit inside real's region
+without filling it (v6, v3\_e19, v3p5, v5, v7\_b, v2\_remapped). Three
+of the noclip checkpoints (v2\_noclip, v3\_e9\_noclip, v3p5\_noclip)
+land at $0\%$ coverage \emph{despite producing the largest hulls of all}
+(synth hulls between $5{,}000$ and $12{,}000$ units of area, against
+real's $25.2$): their synthetic projections are flung so far outside
+the real region that the intersection collapses to nothing. v8\_b and
+v11 are degenerate enough that the PCA coverage is undefined (their
+synth std on at least one feature is exactly zero).
+
+\begin{table}[h!]
+    \centering
+    \footnotesize
+    \begin{tabular}{lrrr}
+        \toprule
+        Model & Coverage \% & Synth hull area & vs. real ($25.2$) \\
+        \midrule
+        \multicolumn{4}{l}{\textit{Coverage-dominant (synth hull engulfs real)}} \\
+        v8           & 85.2 & 66.0 & $2.6\times$ real \\
+        v10\_cascade & 84.9 & 49.7 & $2.0\times$ real \\
+        \midrule
+        \multicolumn{4}{l}{\textit{Coverage-realistic (synth hull comparable to real)}} \\
+        v9           & 71.4 & 30.7 & $1.2\times$ \\
+        v9\_b        & 67.6 & 22.6 & $0.9\times$ \\
+        v4\_noclip   & 63.6 & 26.6 & $1.1\times$ \\
+        v3\_e9       & 61.5 & 17.9 & $0.7\times$ \\
+        v7           & 59.4 & 16.8 & $0.7\times$ \\
+        v2           & 58.6 & 18.9 & $0.7\times$ \\
+        v4           & 56.8 & 17.6 & $0.7\times$ \\
+        v6           & 54.1 & 15.5 & $0.6\times$ \\
+        \midrule
+        \multicolumn{4}{l}{\textit{Coverage-thin (synth hull inside real but undersized)}} \\
+        v3\_e19      & 48.5 & 15.3 & $0.6\times$ \\
+        v3p5         & 47.0 & 13.6 & $0.5\times$ \\
+        v5           & 46.1 & 12.2 & $0.5\times$ \\
+        v7\_b        & 24.7 & 9.1  & $0.4\times$ \\
+        v2\_remapped & 16.1 & 6.5  & $0.3\times$ \\
+        \midrule
+        \multicolumn{4}{l}{\textit{Coverage-zero (hull misses real entirely)}} \\
+        v2\_noclip    & 0.0 & 5{,}720 & $227\times$ real, but disjoint \\
+        v3\_e9\_noclip& 0.0 & 4{,}953 & $197\times$ real, but disjoint \\
+        v3p5\_noclip  & 0.0 & 12{,}253& $486\times$ real, but disjoint \\
+        \midrule
+        \multicolumn{4}{l}{\textit{Degenerate (PCA undefined --- one feature has zero std)}} \\
+        v8\_b, v11    & --- & --- & --- \\
+        \bottomrule
+    \end{tabular}
+    \caption{\textbf{PCA convex-hull coverage of real INTC, sorted by
+    coverage percentage.} ``Coverage \%'' is intersection-over-real-hull-area.
+    Real's hull spans $25.2$ units of PC1--PC2 area. Two findings: (a) the
+    two highest-coverage generators (v8 and v10\_cascade) are also the
+    two with the worst kurtosis behavior --- v8's marginals collapse to
+    near-Gaussian and v10\_cascade's variance is so small that the per-event
+    return distribution is degenerate. Coverage and per-feature distributional
+    realism (the G1 axis) are not the same thing. (b) The three noclip
+    checkpoints whose hulls are $\sim 200$--$500\times$ real's area still
+    register $0\%$ coverage --- they are completely disjoint from real in
+    PC1--PC2 space. Removing the $x_0$ clip pushes the model's outputs
+    so far past real that the spatial overlap vanishes even as the
+    spatial \emph{extent} explodes.}
+    \label{tab:pca_coverage_top}
+\end{table}
+
+The two findings noted under Table~\ref{tab:pca_coverage_top} are the
+ones we will return to in \S\ref{sec:res_anticorrelation}. Coverage is a
+useful diagnostic but it is not a substitute for marginal realism: v8's
+$85\%$ coverage comes with G1 $= 8/15$ and a kurtosis of $2.6$
+(against real $755$), and the two best-PCA models in our entire study
+are also the two whose marginals collapsed most severely. Conversely,
+the noclip family --- which dominated predictive transferability in
+\S\ref{sec:res_predictive} --- is the worst performer here, by a wide
+margin. The pattern that wins on one axis loses on another.
 
 \subsection{The Anti-Correlation Across Architectures}
 \label{sec:res_anticorrelation}
@@ -592,9 +925,7 @@ Lorem ipsum
 
 % ══════════════════════════════════════════════════════════════════════════
 \bibliographystyle{plain}
-% \bibliography{references}
-\section*{References}
-\label{sec:references}
+\bibliography{references}
 \addcontentsline{toc}{section}{References}
 % Minimum citations:
 %   Ho et al. 2020 (DDPM)

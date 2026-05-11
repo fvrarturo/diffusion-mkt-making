@@ -400,44 +400,142 @@ def kde_plot(data_by_model: dict[str, list[float]], real_label: str, title: str,
 
 def midprice_trace_plot(label: str, synth_tapes: list[tuple[str, pd.DataFrame]],
                         real_tape: tuple[str, pd.DataFrame] | None,
-                        out_path: str, n_synth: int = 5) -> None:
-    """Overlay 5 synth tapes' normalized mid traces vs 1 real tape."""
-    fig, ax = plt.subplots(figsize=(10, 4), dpi=150)
+                        out_path: str, n_synth: int = 5,
+                        target_events: int = 10_000,
+                        xlim_max: int = 20_000) -> None:
+    """Overlay 5 long synth traces vs 1 real trace, both ~`target_events`
+    events long so the real price has time to move on a comparable scale.
+
+    Each synth "line" is built by concatenating multiple stitched tapes via
+    log-returns (cumulative product), avoiding the reset-to-1 discontinuity
+    you'd get from naive end-to-end concatenation. With stitched tapes of
+    ~2,560 events each, we typically use 4-5 tapes per synth line.
+
+    Two panels: (a) shared-axis overlay (real + synth on the same y-scale);
+    (b) synth-only zoom (autoscaled — the only way to see degenerate /
+    scale-compressed synth like v8_b, v9, v11). X-axis clipped at xlim_max.
+    """
     cmap = plt.get_cmap("tab10")
 
-    # Real (thick black)
+    # Build long synth traces by chaining returns from sequential tapes.
+    # Falls back to reconstructing mid from mid_return when the parquet doesn't
+    # carry a `mid` column (sampler may save canonical 8-feature schema only).
+    def _tape_returns(df: pd.DataFrame) -> np.ndarray | None:
+        """Return per-event multiplicative returns mid_t/mid_{t-1} for one tape.
+        Prefers a `mid` column when present; otherwise rebuilds from
+        mid_return (treating it as log-return if magnitude is tiny, or
+        already a multiplicative ratio otherwise — defensive)."""
+        if "mid" in df.columns:
+            mid = pd.to_numeric(df["mid"], errors="coerce").dropna().values
+            if len(mid) >= 2 and mid[0] > 0 and not np.any(mid <= 0):
+                return mid[1:] / mid[:-1]
+        if "mid_return" in df.columns:
+            ret = pd.to_numeric(df["mid_return"], errors="coerce") \
+                    .fillna(0.0).values
+            # mid_return in this project is a log-return on tiny scale (~1e-5);
+            # convert to multiplicative factor (1 + r).
+            mult = 1.0 + ret
+            mult = np.clip(mult, 1e-6, 1e6)   # safety
+            return mult
+        return None
+
+    def _build_long_path(start_idx: int) -> tuple[str, np.ndarray] | None:
+        """Concatenate per-tape returns starting at `start_idx` until we have
+        `target_events` worth of data."""
+        rets: list[np.ndarray] = []
+        used: list[str] = []
+        idx = start_idx
+        n_collected = 0
+        while idx < len(synth_tapes) and n_collected < target_events:
+            tid, df = synth_tapes[idx]
+            idx += 1
+            r = _tape_returns(df)
+            if r is None or len(r) == 0:
+                continue
+            rets.append(r)
+            used.append(tid)
+            n_collected += len(r)
+        if not rets:
+            return None
+        all_ret = np.concatenate(rets)[: target_events - 1]
+        path = np.empty(len(all_ret) + 1, dtype=np.float64)
+        path[0] = 1.0
+        path[1:] = np.cumprod(all_ret)
+        return (",".join(used[:3]) + ("..." if len(used) > 3 else ""), path)
+
+    # We aim for n_synth distinct lines, each composed of contiguous tapes
+    # from a sliding window of available tapes.
+    tapes_per_line = max(1, target_events // 2_560)   # ≈ 4 stitched tapes
+    synth_traces: list[tuple[str, np.ndarray]] = []
+    for k in range(n_synth):
+        start = k * tapes_per_line
+        if start >= len(synth_tapes):
+            break
+        result = _build_long_path(start)
+        if result is None:
+            continue
+        synth_traces.append(result)
+    if not synth_traces and synth_tapes:
+        # Diagnostic: nothing got built. Most likely cause is missing both
+        # `mid` and `mid_return` columns — flag it loudly so the report
+        # builder doesn't silently emit empty plots.
+        first_cols = list(synth_tapes[0][1].columns)[:12]
+        print(f"  WARN [{label}]: 0 synth traces built from {len(synth_tapes)} "
+              f"tapes — first tape's columns include: {first_cols}",
+              file=sys.stderr)
+
+    # Real: take a `target_events`-long slice from the middle of one day.
+    real_rel = None
+    rid = ""
     if real_tape is not None:
         rid, rdf = real_tape
         if "mid" in rdf.columns:
             mid = pd.to_numeric(rdf["mid"], errors="coerce").dropna().values
-            if len(mid) > 0 and mid[0] > 0:
-                rel = mid / mid[0]
-                # Show first ~min(len, 50000) events to keep plot reasonable
-                n = min(len(rel), 50_000)
-                ax.plot(np.arange(n), rel[:n], color="black", lw=1.5, label=f"real ({rid})")
+            if len(mid) > target_events and mid[0] > 0:
+                start = (len(mid) - target_events) // 2
+                mid = mid[start:start + target_events]
+                real_rel = mid / mid[0]
+            elif len(mid) > 0 and mid[0] > 0:
+                real_rel = mid / mid[0]
 
-    # Synth (thin colored)
-    plotted = 0
-    for tid, df in synth_tapes[:n_synth]:
-        if "mid" not in df.columns:
-            continue
-        mid = pd.to_numeric(df["mid"], errors="coerce").dropna().values
-        if len(mid) == 0 or mid[0] <= 0:
-            continue
-        rel = mid / mid[0]
-        ax.plot(np.arange(len(rel)), rel, color=cmap(plotted % 10),
-                lw=0.7, alpha=0.7, label=f"synth seed {plotted+1}")
-        plotted += 1
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4.5), dpi=150)
 
+    # ── Panel A: overlay (real + synth, shared y) ────────────────────────────
+    ax = axes[0]
+    if real_rel is not None:
+        ax.plot(np.arange(len(real_rel)), real_rel,
+                color="black", lw=1.5,
+                label=f"real ({rid}, mid-day {len(real_rel)}-event slice)")
+    for i, (tid, rel) in enumerate(synth_traces):
+        ax.plot(np.arange(len(rel)), rel,
+                color=cmap(i % 10), lw=0.9, alpha=0.8,
+                label=f"synth #{i+1} ({len(rel)} events)")
+    ax.set_xlim(0, xlim_max)
     ax.set_xlabel("event index")
-    ax.set_ylabel("normalized mid-price")
-    ax.set_title(f"Mid-Price Traces: {label} vs Real")
+    ax.set_ylabel("mid / mid$_0$")
+    ax.set_title(f"A. Overlay  (target {target_events:,} events / line)")
     ax.axhline(1.0, color="0.5", lw=0.4, ls=":")
     ax.legend(loc="best", fontsize=8)
     ax.grid(True, alpha=0.3)
+
+    # ── Panel B: synth-only zoom (autoscale to synth's range) ─────────────────
+    ax = axes[1]
+    for i, (tid, rel) in enumerate(synth_traces):
+        ax.plot(np.arange(len(rel)), rel,
+                color=cmap(i % 10), lw=1.0, alpha=0.85,
+                label=f"synth #{i+1}")
+    ax.set_xlim(0, xlim_max)
+    ax.set_xlabel("event index")
+    ax.set_ylabel("mid / mid$_0$")
+    ax.set_title(f"B. Synth-only zoom (autoscaled to {label})")
+    ax.axhline(1.0, color="0.5", lw=0.4, ls=":")
+    ax.legend(loc="best", fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    fig.suptitle(f"Mid-Price Traces — {label} vs Real", fontsize=12, y=1.02)
     fig.tight_layout()
-    fig.savefig(out_path)
-    fig.savefig(out_path.replace(".pdf", ".png"), dpi=120)
+    fig.savefig(out_path, bbox_inches="tight")
+    fig.savefig(out_path.replace(".pdf", ".png"), dpi=120, bbox_inches="tight")
     plt.close(fig)
 
 
