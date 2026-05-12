@@ -125,6 +125,18 @@ MODEL_COLORS = {m: GROUP_COLOR[model_group(m)] for m in ALL_MODELS}
 MODEL_COLORS["real"] = GROUP_COLOR["real"]
 MODEL_COLORS["market_replay"] = "#666666"
 
+# Per-protagonist override palette: when a figure compares only v2/v5/v9
+# (the three main-paper protagonists), use these distinctive colors so the
+# three lines are immediately distinguishable. The default GROUP_COLOR
+# scheme would put v2 and v5 both in scale-accurate-blue, making any
+# v2-vs-v5 visual comparison illegible.
+PROTAGONIST_COLOR = {
+    "real": "#000000",
+    "v2":   "#1f77b4",   # blue
+    "v5":   "#2ca02c",   # green
+    "v9":   "#9467bd",   # purple
+}
+
 # Per-model markers within a group, so labels are distinguishable in scatters
 MARKERS = ["o", "s", "^", "D", "v", "P", "X", "*", "<", ">", "p", "h"]
 MODEL_MARKERS: dict[str, str] = {}
@@ -1182,7 +1194,7 @@ def fig_6_3_v2_vs_v9(matrix: pd.DataFrame, pred: pd.DataFrame,
 # ══════════════════════════════════════════════════════════════════════════
 def fig_7_1_vol_vol_kde(vv: pd.DataFrame) -> None:
     """KDE of per-tape vol-vol correlation across models."""
-    keep = ["real", "v2", "v3p5", "v7_b", "v9"]
+    keep = ["real", "v2", "v5", "v9"]
     sub = vv[vv["model"].isin(keep)].copy()
     sub = sub.dropna(subset=["pearson_r"])
     if sub.empty:
@@ -1193,8 +1205,8 @@ def fig_7_1_vol_vol_kde(vv: pd.DataFrame) -> None:
         if len(g) < 5:
             continue
         sns.kdeplot(g["pearson_r"], ax=ax, label=f"{m} (n={len(g)})",
-                    color=MODEL_COLORS.get(m, "gray"),
-                    linewidth=2.5 if m == "real" else 1.5,
+                    color=PROTAGONIST_COLOR.get(m, MODEL_COLORS.get(m, "gray")),
+                    linewidth=2.5 if m == "real" else 1.8,
                     fill=(m == "real"), alpha=0.85)
     ax.axvline(REAL_REF["vol_vol_corr"], color="black", linestyle="--",
                linewidth=1, label=f"real mean = {REAL_REF['vol_vol_corr']:.3f}")
@@ -1240,18 +1252,31 @@ def fig_7_2_acf_grid(acf: pd.DataFrame) -> None:
 
 
 def fig_7_3_trade_sign_acf(acf: pd.DataFrame) -> None:
-    """Single line plot: trade-sign ACF lag 1..30 across selected models."""
-    keep = ["real", "v2", "v4", "v7_b", "v9"]
+    """Single line plot: trade-sign ACF lag 1..30 across selected models.
+
+    Real and synth ACFs are computed only at the small set of lags the
+    validator emits (typically {1, 5, 10, 50, 100}). Connecting these
+    sparse lags with straight lines produces visible "jumps" between
+    them; we instead draw markers + dashed connectors so the reader can
+    see those are interpolation lines, not measured ACF dynamics.
+    """
+    keep = ["real", "v2", "v5", "v9"]
     fig, ax = plt.subplots(figsize=(9, 5))
     for m in keep:
-        sub = acf[(acf["model"] == m) & (acf["feature"] == "trade_sign")] \
-                .sort_values("lag").head(30)
+        sub = acf[(acf["model"] == m) & (acf["feature"] == "trade_sign")]
         if sub.empty:
             continue
-        ax.plot(sub["lag"], sub["acf"], marker="o", markersize=4,
-                color=MODEL_COLORS.get(m, "gray"),
-                linewidth=2.5 if m == "real" else 1.5,
-                label=m)
+        # The temporal_acf.csv often has multiple rows per (model, lag) when
+        # deep_diagnostic was re-run with different chunks; aggregate to a
+        # single point per lag so the lines don't visually "jump" between
+        # duplicate values at the same x-coordinate.
+        sub = sub.groupby("lag", as_index=False)["acf"].mean().sort_values("lag").head(30)
+        is_real = (m == "real")
+        ax.plot(sub["lag"], sub["acf"], marker="o", markersize=7 if is_real else 5,
+                color=PROTAGONIST_COLOR.get(m, MODEL_COLORS.get(m, "gray")),
+                linewidth=2.0 if is_real else 1.4,
+                linestyle="--" if is_real else "-",  # dashed real to flag sparse lags
+                label=m, alpha=0.95 if is_real else 0.85)
     ax.axhline(0, color="k", linewidth=0.5, alpha=0.5)
     ax.axhline(REAL_REF["trade_sign_acf_lag1"], color="black", linestyle=":",
                linewidth=1, label=f"real lag-1 = {REAL_REF['trade_sign_acf_lag1']}")
@@ -1442,21 +1467,28 @@ def fig_10_1_rank_bump(matrix: pd.DataFrame, pred: pd.DataFrame,
 
     fig, ax = plt.subplots(figsize=(13, 9))
     xs = [0, 1, 2]
-    highlight = {"v2", "v5", "v9", "v2_noclip", "v2_remapped"}
+    highlight = {"v2", "v5", "v9"}
     for _, r in pts.iterrows():
         ys = [r["rk_G1"], r["rk_pred"], r["rk_PCA"]]
-        lw = 2.6 if r["model"] in highlight else 0.9
-        a = 0.95 if r["model"] in highlight else 0.4
-        ax.plot(xs, ys, color=MODEL_COLORS[r["model"]],
-                linewidth=lw, alpha=a, marker="o", markersize=7)
-        ax.annotate(r["model"], (xs[0] - 0.04, ys[0]),
-                    ha="right", va="center", fontsize=8,
-                    fontweight="bold" if r["model"] in highlight else "normal",
-                    color=MODEL_COLORS[r["model"]])
-        ax.annotate(r["model"], (xs[-1] + 0.04, ys[-1]),
-                    ha="left", va="center", fontsize=8,
-                    fontweight="bold" if r["model"] in highlight else "normal",
-                    color=MODEL_COLORS[r["model"]])
+        is_hi = r["model"] in highlight
+        lw = 3.2 if is_hi else 0.7
+        a = 1.0 if is_hi else 0.18
+        line_color = (PROTAGONIST_COLOR[r["model"]] if is_hi
+                      else MODEL_COLORS[r["model"]])
+        ax.plot(xs, ys, color=line_color,
+                linewidth=lw, alpha=a, marker="o",
+                markersize=10 if is_hi else 5,
+                zorder=10 if is_hi else 1)
+        # Only annotate the three protagonists
+        if is_hi:
+            ax.annotate(r["model"], (xs[0] - 0.04, ys[0]),
+                        ha="right", va="center", fontsize=11,
+                        fontweight="bold",
+                        color=line_color)
+            ax.annotate(r["model"], (xs[-1] + 0.04, ys[-1]),
+                        ha="left", va="center", fontsize=11,
+                        fontweight="bold",
+                        color=line_color)
     ax.set_xticks(xs)
     ax.set_xticklabels(["G1 rank", "Predictive rank", "PCA rank"], fontsize=12)
     ax.invert_yaxis()

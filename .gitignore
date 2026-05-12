@@ -2,6 +2,7 @@ checkpoints/
 data/
 reports/
 results/
+results_cluster/
 __pycache__/
 **/__pycache__/
 venv/

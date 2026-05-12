@@ -97,18 +97,49 @@ def load_returns(real_dir: Path, ticker: str, max_files: int,
     return arr
 
 
+REGIMES = ("base", "high_vol", "toxic", "thin")
+
+
 def load_synth_returns(synth_base: Path, model: str, max_files: int,
                         max_n: int = 5_000_000) -> np.ndarray:
+    """Load synthetic mid_return events balanced across the four regimes.
+
+    The earlier "recursive glob + take first max_files sorted" approach
+    landed entirely inside the `base/` regime subdir (alphabetically
+    first), giving regime-conditional kurtosis estimates (e.g. v2
+    base-only kurt ~= 4495) instead of the across-regime numbers script
+    50 reports in B1_return_stats.csv (v2 across-regime kurt ~= 122).
+    We now mimic script 50's `_sample_synth`: take up to
+    `max_files // 4` parquets from each of `base / high_vol / toxic /
+    thin`, then fall back to the recursive glob if no regime
+    subdirectories are found.
+    """
     rel = SYNTH_LAYOUT.get(model)
     if rel is None:
         return np.array([])
     base = synth_base / rel
     if not base.exists():
         return np.array([])
-    paths = sorted(base.glob("**/*.parquet"))[:max_files]
+
+    n_per_regime = max(1, max_files // len(REGIMES))
+    paths: list[Path] = []
+    regime_hits: list[str] = []
+    for regime in REGIMES:
+        rd = base / regime
+        if rd.exists():
+            sub = sorted(rd.glob("*.parquet"))[:n_per_regime]
+            paths.extend(sub)
+            regime_hits.append(f"{regime}={len(sub)}")
+    # Fallback: no regime subdirs found → recursive glob (legacy layout)
     if not paths:
-        return np.array([])
-    print(f"  [{model}] loading {len(paths)} parquets")
+        paths = sorted(base.glob("**/*.parquet"))[:max_files]
+        if not paths:
+            return np.array([])
+        print(f"  [{model}] no regime subdirs found; falling back to recursive glob")
+    else:
+        print(f"  [{model}] loading per-regime: {' '.join(regime_hits)} "
+              f"({len(paths)} files total)")
+
     chunks = []
     n = 0
     for p in paths:
@@ -141,8 +172,15 @@ def main() -> None:
     ap.add_argument("--models", nargs="+",
                     default=["v2", "v5", "v9", "v3_e9_noclip"])
     ap.add_argument("--max-files-real", type=int, default=10)
-    ap.add_argument("--max-files-synth", type=int, default=200)
-    ap.add_argument("--max-n-points", type=int, default=2_000_000)
+    # 1000 = 250 parquets per regime × 4 regimes (matches script 50's
+    # _sample_synth default), enough to capture a representative
+    # across-regime distribution.
+    ap.add_argument("--max-files-synth", type=int, default=1000)
+    # Use the full set of events on the val window: subsampling to 2M was
+    # under-counting the heavy tails and biasing kurtosis toward ~190 rather
+    # than the canonical ~755 reported by scripts 50 and 81. The kurtosis
+    # estimator is fast at 25M points; no need to cap.
+    ap.add_argument("--max-n-points", type=int, default=30_000_000)
     ap.add_argument("--out", type=Path, default=ROOT / "results" / "trades_style")
     args = ap.parse_args()
 
@@ -192,23 +230,40 @@ def main() -> None:
     ax.legend(loc="upper right", fontsize=9)
     ax.grid(True, which="both", alpha=0.3)
 
-    # ── Panel B: Q-Q plot of synth vs real for the synth set (excluding real) ─
+    # ── Panel B: Q-Q plot — restricted to the *non-zero* return subset ───────
+    # INTC mid_return is ~98.78% exactly zero on the val window; if we Q-Q
+    # the full distribution, the bulk between quantiles ~0.01 and ~0.99 is
+    # all literally zero on both sides, and the curve flat-lines at zero with
+    # no visible information. Q-Q on the conditional |return| > 0 subset
+    # exposes the actual tail-shape comparison the figure is supposed to
+    # convey.
     ax = axes[1]
-    qs = np.linspace(0.001, 0.999, 199)
-    real_q = np.quantile(real_ret, qs)
-    for label, arr in synth_returns.items():
-        if len(arr) < 100:
-            continue
-        synth_q = np.quantile(arr, qs)
-        ax.plot(real_q, synth_q, color=_color(label),
-                linewidth=1.6, label=label, alpha=0.9, marker="o", markersize=2.5)
-    # Diagonal reference line
-    diag = np.linspace(real_q.min(), real_q.max(), 100)
-    ax.plot(diag, diag, "k--", linewidth=1, alpha=0.7,
-            label="y = x  (perfect match)")
-    ax.set_xlabel("real quantile")
-    ax.set_ylabel("synth quantile")
-    ax.set_title("B. Q-Q Plot (synth vs real)\n"
+    qs = np.concatenate([
+        np.linspace(0.001, 0.01, 20),    # lower-tail densification
+        np.linspace(0.01, 0.99, 161),
+        np.linspace(0.99, 0.999, 20),    # upper-tail densification
+    ])
+    real_nz = real_ret[real_ret != 0]
+    if len(real_nz) < 100:
+        ax.text(0.5, 0.5, "insufficient non-zero real returns",
+                ha="center", va="center", transform=ax.transAxes)
+    else:
+        real_q = np.quantile(real_nz, qs)
+        for label, arr in synth_returns.items():
+            arr_nz = arr[arr != 0]
+            if len(arr_nz) < 100:
+                continue
+            synth_q = np.quantile(arr_nz, qs)
+            ax.plot(real_q, synth_q, color=_color(label),
+                    linewidth=1.6, label=f"{label}  (n_nz={len(arr_nz):,})",
+                    alpha=0.9, marker="o", markersize=2.5)
+        # Diagonal reference line
+        diag = np.linspace(real_q.min(), real_q.max(), 100)
+        ax.plot(diag, diag, "k--", linewidth=1, alpha=0.7,
+                label="y = x  (perfect match)")
+    ax.set_xlabel("real quantile  (|return| > 0 subset)")
+    ax.set_ylabel("synth quantile  (|return| > 0 subset)")
+    ax.set_title("B. Q-Q Plot, conditional on |return| > 0\n"
                  "Heavy-tail miss ↔ bowing away from diagonal in extremes",
                  pad=8)
     ax.legend(loc="upper left", fontsize=9)

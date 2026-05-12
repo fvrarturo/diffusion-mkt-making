@@ -1,0 +1,17 @@
+\begin{table}
+\caption{Spearman correlation between evaluation metrics across 20 generators. Notable anti-correlations between G1, Predictive, and PCA support the three-axis tension.}
+\label{tab:metric_correlations}
+\begin{tabular}{lrrrrrrr}
+\toprule
+ & G1 & Predictive & PCA & kurt & trade_frac & vol_vol & OFI_slope \\
+\midrule
+G1 & 1.00 & -0.17 & 0.26 & 0.55 & 0.41 & -0.05 & 0.22 \\
+Predictive & -0.17 & 1.00 & 0.57 & 0.11 & -0.51 & 0.13 & -0.36 \\
+PCA & 0.26 & 0.57 & 1.00 & 0.44 & -0.17 & -0.02 & -0.34 \\
+kurt & 0.55 & 0.11 & 0.44 & 1.00 & 0.11 & -0.66 & -0.00 \\
+trade_frac & 0.41 & -0.51 & -0.17 & 0.11 & 1.00 & 0.27 & 0.38 \\
+vol_vol & -0.05 & 0.13 & -0.02 & -0.66 & 0.27 & 1.00 & -0.14 \\
+OFI_slope & 0.22 & -0.36 & -0.34 & -0.00 & 0.38 & -0.14 & 1.00 \\
+\bottomrule
+\end{tabular}
+\end{table}

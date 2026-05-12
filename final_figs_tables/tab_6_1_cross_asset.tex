@@ -1,0 +1,16 @@
+\begin{table}
+\caption{Cross-asset comparison: ε+FiLM (v2) vs v+AdaLN-Zero (v5) across INTC (large-tick), TSLA (small-tick), SPY (ETF). G1 = stylized-fact pass count; Pred ×replay = test MAE relative to market-replay baseline; PCA \% = convex-hull coverage of real.}
+\label{tab:cross_asset}
+\begin{tabular}{llrrrrr}
+\toprule
+ticker & model & G1 & Pred ×replay & PCA \% & kurtosis & trade frac \\
+\midrule
+INTC & v2 & 12/15 & 14.20 & 58.6 & 122 & 0.558 \\
+INTC & v5 & 13/15 & 10.69 & 46.1 & 1257 & 0.552 \\
+TSLA & v2 & 12/16 & 4.86 & 62.0 & — & 0.183 \\
+TSLA & v5 & 10/16 & 12.21 & 18.9 & — & 0.340 \\
+SPY & v2 & — & — & — & — & — \\
+SPY & v5 & — & — & — & — & — \\
+\bottomrule
+\end{tabular}
+\end{table}

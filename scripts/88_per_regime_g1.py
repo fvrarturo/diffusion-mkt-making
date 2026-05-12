@@ -173,9 +173,15 @@ def load_per_regime() -> pd.DataFrame:
 
 
 def _fmt(x: float | None) -> str:
-    """Compact numeric formatter for heatmap cells."""
+    """Compact numeric formatter for heatmap cells.
+
+    Returns "n/a" for NaN cells (rather than the em-dash) so the reader
+    sees v9's specific failure mode (validator returns synth=nan for
+    Trade-sign lag-1 ACF, RV signature shape, and base-regime
+    ACF(|r|) power-law β) explicitly rather than as a blank gap.
+    """
     if x is None or (isinstance(x, float) and np.isnan(x)):
-        return "—"
+        return "n/a"
     a = abs(x)
     if a == 0:
         return "0"
@@ -253,6 +259,7 @@ def fig_heatmap(df: pd.DataFrame) -> None:
 
     cmap = LinearSegmentedColormap.from_list(
         "g_to_r", ["#1a7d3a", "#7fc97f", "#f5f5dc", "#fdae61", "#d73027"])
+    cmap.set_bad("#cfcfcf")  # NaN cells render as light gray (validator returned NaN)
 
     sns.set_theme(style="white", context="paper")
     fig, ax = plt.subplots(figsize=(15, 9))
@@ -263,6 +270,17 @@ def fig_heatmap(df: pd.DataFrame) -> None:
                 linewidths=0.6, linecolor="white",
                 annot=annot, fmt="", annot_kws={"fontsize": 8},
                 ax=ax)
+
+    # seaborn skips annot text for NaN cells (the gray "validator returned
+    # NaN" cells). Re-add them manually so the reader sees explicit "n/a"
+    # rather than a silently-empty cell. Use the err_norm shape to scan.
+    nrows, ncols = err_norm.shape
+    for ri in range(nrows):
+        for ci in range(ncols):
+            if pd.isna(err_norm.iat[ri, ci]):
+                ax.text(ci + 0.5, ri + 0.5, "n/a",
+                        ha="center", va="center",
+                        fontsize=8, color="#404040")
 
     # Header: model labels above each model's 4-regime block.
     # Put labels just BELOW the title (via axes coords) so they never collide

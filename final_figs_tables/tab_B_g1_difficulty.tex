@@ -1,0 +1,27 @@
+\begin{table}
+\caption{G1 Check Difficulty — sorted by number of models passing.}
+\label{tab:g1_difficulty}
+\begin{tabular}{lrrl}
+\toprule
+model & pass\_count & pass\_rate & models\_that\_fail \\
+check &  &  &  \\
+\midrule
+Trade fraction (synth vs real) & 0 & 0.000000 &  \\
+ACF(|r|) power-law & 3 & 0.150000 & v2, v2\_remapped, v3\_e9, v3\_e19, v3p5... \\
+ACF(|r|) lag-50 deviation & 7 & 0.350000 & v2, v2\_noclip, v2\_remapped, v3\_e9, v3\_e19... \\
+Size tail exponent & 7 & 0.350000 & v2, v2\_noclip, v2\_remapped, v3\_e19, v3p5\_noclip... \\
+RV signature shape & 10 & 0.500000 & v2\_noclip, v2\_remapped, v3p5\_noclip, v3\_e9\_noclip, v8... \\
+Trade-sign lag-1 ACF sign & 12 & 0.600000 & v3p5, v4\_noclip, v5, v8, v8\_b... \\
+Conditional moments (|z|<2) & 15 & 0.750000 & v2\_noclip, v3p5\_noclip, v3\_e9\_noclip, v8\_b, v10\_cascade \\
+E[r|I] sign at =10 & 15 & 0.750000 & v3p5\_noclip, v8, v8\_b, v10\_cascade, v11 \\
+E[r|I] sign at =50 & 15 & 0.750000 & v3p5\_noclip, v8, v8\_b, v10\_cascade, v11 \\
+Joint spread-imbalance JSD & 15 & 0.750000 & v2\_noclip, v2\_remapped, v3p5\_noclip, v3\_e9\_noclip, v11 \\
+Return W-1 & 15 & 0.750000 & v2\_noclip, v2\_remapped, v3p5\_noclip, v3\_e9\_noclip, v8 \\
+Return excess kurtosis & 17 & 0.850000 & v3\_e9\_noclip, v8\_b, v11 \\
+Spread 1-tick fraction & 17 & 0.850000 & v2\_noclip, v3p5\_noclip, v3\_e9\_noclip \\
+Spread W-1 & 17 & 0.850000 & v2\_noclip, v3p5\_noclip, v3\_e9\_noclip \\
+Crossed books rate (decode) & 20 & 1.000000 &  \\
+Return lag-1 ACF & 20 & 1.000000 &  \\
+\bottomrule
+\end{tabular}
+\end{table}
