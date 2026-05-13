@@ -82,9 +82,18 @@ def _list_parquets(directory: Path, max_n: int) -> list[Path]:
     return nested[:max_n]
 
 
-def load_features_per_tape(directory: str | Path, max_tapes: int) -> list[np.ndarray]:
+def load_features_per_tape(directory: str | Path, max_tapes: int,
+                             max_events_per_tape: int = 0) -> list[np.ndarray]:
     """Load each parquet into a (T, 8) float32 array. Tapes are kept SEPARATE
-    so windows don't cross tape boundaries."""
+    so windows don't cross tape boundaries.
+
+    `max_events_per_tape`: if > 0, truncate each tape to its first N events
+    after load. Memory bound: each tape costs `T × 8 features × 4 bytes`.
+    Without a cap, SPY's ~30M-event raw days × 200 tapes ≈ 190 GB OOM the
+    loader. Capping at e.g. 200_000 events bounds per-tape memory at
+    ~6 MB (× 200 tapes ≈ 1.2 GB total) while still giving ~25k windows
+    per tape at stride=8 — plenty for the LSTM ranking to stabilise.
+    """
     p = Path(directory)
     if not p.exists():
         raise FileNotFoundError(directory)
@@ -102,6 +111,8 @@ def load_features_per_tape(directory: str | Path, max_tapes: int) -> list[np.nda
         arr = df.fillna(0.0).to_numpy().astype(np.float32)
         if arr.shape[0] < 100:
             continue
+        if max_events_per_tape and arr.shape[0] > max_events_per_tape:
+            arr = arr[:max_events_per_tape]
         out.append(arr)
     if not out:
         raise FileNotFoundError(f"no usable tapes in {directory}")
@@ -301,6 +312,12 @@ def main():
                          "independent. Default 8 keeps raw 256-event tapes viable.")
     ap.add_argument("--max-tapes-train", type=int, default=200)
     ap.add_argument("--max-tapes-test", type=int, default=10)
+    ap.add_argument("--max-events-per-tape", type=int, default=0,
+                    help="If > 0, truncate each tape to its first N events on "
+                         "load. Bounds tape memory at N × 8 × 4 bytes per tape. "
+                         "Set to e.g. 200000 for SPY (whose ~30M-event days "
+                         "OOM the loader at the default uncapped setting). "
+                         "Default 0 = no cap (matches INTC/TSLA behaviour).")
     ap.add_argument("--max-windows-per-source", type=int, default=200_000,
                     help="Random-subsample windows per training source after "
                          "window construction. Default 200k — bounds memory at "
@@ -333,7 +350,8 @@ def main():
 
     # ── Build the test set ONCE (real validation data) ──
     print(f"\nLoading real TEST tapes from {args.real_test_dir} ...")
-    real_test_tapes = load_features_per_tape(args.real_test_dir, args.max_tapes_test)
+    real_test_tapes = load_features_per_tape(args.real_test_dir, args.max_tapes_test,
+                                              max_events_per_tape=args.max_events_per_tape)
     print(f"  {len(real_test_tapes)} real test tapes loaded")
     real_test_X, real_test_y = make_windows(real_test_tapes, args.window_size, args.stride,
                                               max_windows=args.max_windows_test, seed=args.seed)
@@ -341,7 +359,8 @@ def main():
 
     # ── Market replay baseline: train on real train, test on real val ──
     print(f"\nLoading real TRAIN tapes (market_replay baseline) from {args.real_train_dir} ...")
-    real_train_tapes = load_features_per_tape(args.real_train_dir, args.max_tapes_train)
+    real_train_tapes = load_features_per_tape(args.real_train_dir, args.max_tapes_train,
+                                                max_events_per_tape=args.max_events_per_tape)
     print(f"  {len(real_train_tapes)} real train tapes loaded")
     real_train_X, real_train_y = make_windows(real_train_tapes, args.window_size, args.stride,
                                                 max_windows=args.max_windows_per_source, seed=args.seed)
@@ -367,7 +386,8 @@ def main():
     for sdir, label in zip(args.synth_dirs, args.labels):
         print(f"\n=== Training on {label}  (synth_dir: {sdir}) ===")
         try:
-            synth_tapes = load_features_per_tape(sdir, args.max_tapes_train)
+            synth_tapes = load_features_per_tape(sdir, args.max_tapes_train,
+                                                   max_events_per_tape=args.max_events_per_tape)
         except FileNotFoundError as e:
             print(f"  SKIP {label}: {e}")
             continue

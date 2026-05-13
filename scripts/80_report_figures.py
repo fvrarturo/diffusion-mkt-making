@@ -514,8 +514,19 @@ def fig_2_1_g1_heatmap(g1: pd.DataFrame) -> None:
         raise ValueError(f"g1 must contain {required} (missing: {missing})")
 
     g1 = g1.copy()
-    # Drop checks with no numeric synth value (validator emits free-text).
-    g1 = g1[~g1["check"].isin({"Conditional moments (|z|<2)"})]
+    # Drop checks with no numeric synth value (validator emits free-text)
+    # OR that render with too many blank/NaN cells to be readable in the
+    # cross-sectional heatmap.
+    g1 = g1[~g1["check"].isin({
+        "Conditional moments (|z|<2)",
+        "ACF(|r|) power-law",
+        "E[r|I] sign at =10",
+        "E[r|I] sign at =50",
+        "RV signature shape",
+        "Size tail exponent",
+        "Trade fraction (synth vs real)",
+        "Trade-sign lag-1 ACF sign",
+    })]
     # Per-cell absolute error from the per-row real reference
     g1["error"] = (g1["value"] - g1["real_value"]).abs()
 

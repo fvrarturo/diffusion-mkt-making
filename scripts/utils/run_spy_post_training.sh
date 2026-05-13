@@ -34,14 +34,34 @@ best_ckpt() {
     # Lowest-valloss checkpoint anywhere under the run dir. Lightning typically
     # writes to <run_dir>/default/ckpt-epoch*-valloss*.ckpt; we also look in the
     # run dir itself for backwards compatibility with the older v9-era runs.
+    #
+    # FALLBACK for chained-training (SPY): if the chunked 6h jobs never
+    # completed an epoch (each chunk hit its time budget on step-based
+    # saves), no ckpt-epoch*-valloss*.ckpt files exist. In that case we
+    # fall back to last.ckpt (Lightning maintains it as the truly latest
+    # state) or to the highest-numbered ckpt-step*.ckpt.
     local d="$1"
     [[ -d "$d" ]] || return 0
-    {
+    local c
+    c=$( {
         ls -1 "$d"/ckpt-epoch*-valloss*.ckpt 2>/dev/null
         ls -1 "$d"/default/ckpt-epoch*-valloss*.ckpt 2>/dev/null
         ls -1 "$d"/lightning_logs/version_*/checkpoints/ckpt-epoch*-valloss*.ckpt 2>/dev/null
     } | awk -F'valloss' '{print $2, $0}' \
-      | sort -n | head -1 | awk '{print $2}'
+      | sort -n | head -1 | awk '{print $2}' )
+    if [[ -n "$c" ]]; then
+        echo "$c"
+        return 0
+    fi
+    # Fallback path
+    {
+        ls -1 "$d"/last.ckpt 2>/dev/null
+        ls -1 "$d"/default/last.ckpt 2>/dev/null
+        ls -1 "$d"/lightning_logs/version_*/checkpoints/last.ckpt 2>/dev/null
+        ls -1 "$d"/ckpt-step*.ckpt 2>/dev/null            | sort -V | tail -1
+        ls -1 "$d"/default/ckpt-step*.ckpt 2>/dev/null    | sort -V | tail -1
+        ls -1 "$d"/lightning_logs/version_*/checkpoints/ckpt-step*.ckpt 2>/dev/null | sort -V | tail -1
+    } | head -1
 }
 
 submit_one() {

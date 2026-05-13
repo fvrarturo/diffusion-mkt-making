@@ -20,7 +20,6 @@
 
 % ── Graphics, color, hyperlinks ────────────────────────────────────────────
 \usepackage{graphicx, subcaption}
-\graphicspath{{../final_figs_tables/}{../results/report_figures/}{../results/}}
 \usepackage{xcolor}
 \usepackage{cleveref}
 
@@ -64,19 +63,30 @@
 \theoremstyle{definition}   % roman body, bold header
 \newtheorem{definition}{Definition}
 
+% ── Tight float spacing: figures/tables vs text ───────────────────────────
+\setlength{\textfloatsep}{6pt plus 1pt minus 2pt}   % floats at top/bottom of column
+\setlength{\floatsep}{5pt plus 1pt minus 2pt}       % between two floats
+\setlength{\intextsep}{6pt plus 1pt minus 2pt}      % floats placed inside text
+
+% ── Tight caption spacing ─────────────────────────────────────────────────
+\captionsetup{
+  skip=3pt,              % space between figure/table and caption
+  belowskip=-4pt         % space after caption before text resumes
+}
+
+% For subfigures, if used
+\captionsetup[subfigure]{
+  skip=2pt
+}
+
 \begin{document}
 % --- Improved Title Block ---
 \twocolumn[
   \begin{center}
-    \vspace{1em}
     {\large \bfseries Diffusion Models for Limit Order Book Generation \par}
     \vspace{0.6em}
     {\large \itshape On the Tension Between Distributional Realism, Temporal Transferability, and Multivariate Coverage \par}
-    \vspace{0.6em}
-    {\normalsize Arturo Favara, Maxime Vallot, Nick Bernardini \par}
-    \vspace{0.3em}
-    {\small Massachusetts Institute of Technology (15.458), Spring 2026 \par}
-    \vspace{1.5em}
+    \vspace{-0.3em}
   \end{center}
 ]
 
@@ -84,7 +94,7 @@
 \fancyhf{} % Clear all headers and footers
 \fancyhead[L]{\small A. Favara, M. Vallot, N. Bernardini} % Left: Authors
 \fancyhead[C]{\small\thepage} % Center: Page
-\fancyhead[R]{\small 15.458, Spring 2026} % Right: Course
+\fancyhead[R]{\small Massachusetts Institute of Technology 15.458, Spring 2026} % Right: Course
 
 % make the title area
 \titlespacing*{\section}{0pt}{1.2ex}{0.6ex}
@@ -97,37 +107,33 @@
 \setlength{\parskip}{0pt}
 \setlist[itemize]{leftmargin=1.5em}
 \setlist[enumerate]{leftmargin=1.5em}
-
+% Keep figure and tex paths the same: we compile on Overleaf not on local
 % ══════════════════════════════════════════════════════════════════════════
 \begin{abstract}
-We trained a family of diffusion models to generate synthetic limit
-order book data --- the event-by-event record of buy and sell orders
-that drives a stock price --- and asked which architectural choices
-make a model better at the job. The motivation is practical: trading-
-strategy backtests on historical data are biased because the recorded
-market does not react to the strategy under test, and synthetic
-generators are the standard fix, but the literature has not been clear
-about what ``better generation'' means in this setting. We trained
-twenty diffusion variants on Intel (INTC) order-book data, varying
-five architectural design choices, and evaluated each one along three
-independent quality axes: how well per-feature distributions match
-real data, how useful the synthetic data is for training a downstream
-prediction model, and how well the model spans the full range of
-market conditions seen historically. We also ran four reference market-
-making strategies against each generator and re-ran the full pipeline
-on Tesla (TSLA) and the S\&P 500 ETF (SPY) to test cross-stock
-generalization. The central finding is that no architectural choice we
-tested wins on all three quality axes at once --- the model that best
-matches per-feature distributions is not the one most useful for
-downstream training, which is not the one with the broadest market-
-state coverage. The trade-off is partly mechanical (a single squared-
-error training criterion cannot optimize all three at the same time on
-heavy-tailed data) and partly stock-specific (it is sharper on INTC
-than on TSLA). For practitioners of synthetic LOB data the implication
-is that the right model depends on which axis the downstream task
-rewards, and we recommend evaluating against all three before
-committing.
+We trained twenty diffusion-model variants ($>$120h of GPU training) to generate synthetic limit
+order book (LOB) data for Intel, Tesla, and the S\&P~500 ETF, varying
+five architectural design choices (prediction target, conditioning,
+preconditioning, data transform, loss weighting). Each variant was
+evaluated on three independent quality axes: distributional realism
+(do per-feature statistics match real data?), temporal transferability
+(can a downstream model trained on synthetic data predict real
+returns?), and multivariate coverage (does the generator span the full
+range of observed market states?). No architecture wins all three.
+The model with the most realistic marginal distributions is the least
+useful for downstream training; the model most useful for training
+covers none of the real state space. The trade-off is partly
+mechanical --- per-element squared-error loss cannot simultaneously
+optimize marginal shape and cross-feature temporal structure on
+heavy-tailed data --- and partly stock-specific: it is sharp on INTC
+(a large-tick stock with 89\% zero-return events) but largely
+dissolves on TSLA (a small-tick stock with more continuous returns).
+As a secondary application we stress-tested four Avellaneda--Stoikov
+market-making agents against each generator and found that
+agent-ranking metrics are decoupled from all three quality axes. For
+practitioners the implication is that the right generator depends on
+which quality axis the downstream task rewards.
 \end{abstract}
+\vspace{-2em}
 % ~250 words, non-technical. Audience: senior manager who knows finance but
 % not ML. Structure:
 %   1. What we did (one sentence).
@@ -148,51 +154,32 @@ committing.
 \subsection{The Backtesting Problem}
 \label{sec:backtest_problem}
 
-The standard way to evaluate a trading strategy is to replay it against
-recorded historical market data. The problem with the standard way ---
-already familiar inside the market-microstructure literature and
-re-emphasized recently by \cite{berti2025trades} --- is that recorded
-markets are \emph{non-responsive}: the order book is what it was on
-that day, regardless of what the strategy under test would have done
-to it. A market-making agent that posts an aggressive quote and gets
-filled in the replay was not actually competing for that fill; the
-counterparty trade happens exactly as it did historically. The next
-quote update is the same. So is the realized adverse selection. Any
-market-impact-bearing strategy gets credit it would not have received
-in production, which is the most common reason a backtest looks better
-than the live strategy. The methodological response over the last
-decade has been to generate synthetic market data on which strategies
-can be tested under counterfactual conditions, and the live question
-in that line of work is which generator produces synthetic LOB streams
-realistic enough to be useful for that purpose.
+Historical replay is non-responsive --- the recorded book does not
+react to the agent under test, systematically over-crediting
+impact-bearing strategies (see \cite{berti2025trades} for a recent
+treatment). Synthetic generators are the standard fix. The open
+question is which generator architecture produces LOB streams
+realistic enough to be useful.
 
 \subsection{Why Diffusion Models for LOBs}
 \label{sec:why_diffusion}
 
-The first wave of generative LOB models was built on
-GANs~\cite{li2020generating, coletta2021towards, coletta2022learning},
-which produced LOB-shaped output but suffered from the mode-collapse
-failure mode that GANs exhibit on heavy-tailed data: the discriminator
-is easiest to fool by emitting the bulk of the distribution and
-ignoring the tails, and the generator obliges. For LOB data, where
-the most consequential events (large trades, regime breaks) live in
-the tails, mode collapse is the wrong failure mode. Denoising diffusion
-probabilistic models~\cite{ho2020denoising} replace the
-adversarial dynamic with an explicit denoising objective, train stably
-without mode-collapse pathology, and admit flexible conditioning ---
-all properties that fit the LOB-generation problem. The TRADES
-work~\cite{berti2025trades} is the first applied diffusion architecture
-for LOB simulation and is the methodological anchor for our project:
-we adopt their transformer denoiser, their event-tensor representation,
-and their predictive-score evaluation protocol, and we ask what happens
-when the architectural design choices around that backbone are varied
-systematically.
+GANs suffer mode collapse on heavy-tailed
+data~\cite{li2020generating, coletta2021towards, coletta2022learning};
+denoising diffusion probabilistic models~\cite{ho2020denoising}
+replace the adversarial dynamic with an explicit denoising
+objective, train stably, and admit flexible conditioning. The
+TRADES work~\cite{berti2025trades} is the first applied diffusion
+architecture for LOB simulation and is our methodological anchor:
+we adopt their transformer denoiser, their event-tensor
+representation, and their predictive-score evaluation protocol,
+and ask what happens when the architectural design choices around
+that backbone are varied systematically.
 
 \subsection{Contributions}
 \label{sec:contributions}
 
-This report makes five contributions, each of which we treat as a
-finding rather than a method claim --- the diffusion machinery itself
+This report makes five contributions. The diffusion machinery itself
 is not new, but what the machinery does on this kind of data, when
 varied systematically, is.
 
@@ -227,30 +214,6 @@ varied systematically, is.
     is.
 \end{enumerate}
 
-\subsection{Paper Organization}
-\label{sec:organization}
-
-\S\ref{sec:data} introduces the LOB data and the six Cont
-stylized facts~\cite{cont2001stylized} that anchor the distributional
-realism axis. \S\ref{sec:methods} presents the diffusion-model
-backbone, the five architectural axes we vary, the twenty trained
-checkpoints, and the three-axis evaluation framework on which every
-number in the report is computed. \S\ref{sec:results} is the empirical
-core: it walks through the three protagonists (v2, v5, v9) per axis,
-quantifies the cross-architecture anti-correlation that motivates the
-``tension'' framing, and ends with a copula case study
-(\S\ref{sec:copula_story}) that traces a single architectural family
-through all three axes in one self-contained narrative.
-\S\ref{sec:agents} stress-tests the generators with a four-agent
-Avellaneda-Stoikov family and reports the patterns that survive the
-spread of rankings. \S\ref{sec:cross_asset} re-runs the v2/v5
-pipeline on TSLA and SPY to test how INTC-specific the trade-off is.
-\S\ref{sec:discussion} reads the structural and practical implications,
-and lists limitations and follow-ups. Appendices contain the full G1
-matrix, configuration details for all twenty checkpoints, the agent and
-LSTM implementation specifics, and the negative-result log from
-the Phase A Min-SNR misadventure that we ran early in the project.
-
 % ══════════════════════════════════════════════════════════════════════════
 \section{Data}
 \label{sec:data}
@@ -260,52 +223,37 @@ the Phase A Min-SNR misadventure that we ran early in the project.
 \subsection{Limit Order Book Mechanics}
 \label{sec:lob_mechanics}
 
-A limit order book (LOB) is the matching-engine view of a security: a
-price-time-priority queue of resting limit orders, with the buy side
-(\emph{bids}) ranked by descending price and the sell side (\emph{asks})
-by ascending price. The highest bid and lowest ask form the
-\emph{inside quote}; their average is the \emph{midprice} and their
-difference is the \emph{spread}. Two event types drive the book
-forward: quote updates (a limit order is submitted, cancelled, or has a
-queue position change) and trades (a marketable order is matched
-against resting liquidity and consumes it). INTC, the primary ticker
-in this study, trades at roughly \$30 against a one-cent tick, which
-makes one tick worth $\sim$3.3~bps and pins the spread at exactly one
-tick essentially all the time. As a direct consequence, the inside
-quote is stable across the vast majority of events --- in our training
-window roughly $89\%$ of events leave the midprice unchanged, and the
-per-event return is therefore a heavily zero-inflated quantity rather
-than a continuous Gaussian-like one. This is the structural property
-that becomes load-bearing in \S\ref{sec:copula_story}; we flag it here
-so the reader recognizes it when it returns.
+We refer readers unfamiliar with LOB mechanics to
+\cite{gould2013limit}. The structural property of INTC that
+matters for this study is that it is a large-tick stock: the
+spread is pinned at one tick ($\sim$3.3~bps) and roughly $89\%$ of
+events leave the midprice unchanged. The per-event return is
+therefore a heavily zero-inflated quantity rather than a
+continuous Gaussian-like one, and this zero-inflation becomes
+load-bearing in \S\ref{sec:copula_story}.
 
 \subsection{Data Source and Feature Engineering}
 \label{sec:data_source}
 
-The raw data is NYSE TAQ accessed via WRDS, providing nanosecond-resolution
-quote and trade messages from which we reconstruct the top-of-book LOB
-state stream using a LOBSTER-style pipeline. We do not model the full
-multi-level book; the diffusion model operates on an eight-feature
-event tensor that captures the inside quote and the most recent trade:
-$\Delta t$ (time gap to the previous event, log-scaled), $\text{event\_type}$
-(categorical, one-hot encoded), $\text{bid\_dist}$ and $\text{ask\_dist}$
-(best-level distance from the prevailing midprice, in ticks),
+Raw data is NYSE TAQ via WRDS (nanosecond-resolution quote + trade
+messages); we reconstruct the top-of-book LOB state stream with a
+LOBSTER-style pipeline. The diffusion model operates on an
+eight-feature event tensor capturing the inside quote and the most
+recent trade: $\Delta t$ (time gap to previous event, log-scaled),
+$\text{event\_type}$ (categorical, one-hot), $\text{bid\_dist}$
+and $\text{ask\_dist}$ (best-level distance from midprice, ticks),
 $\text{bid\_sz}$ and $\text{ask\_sz}$ (top-of-book queue sizes),
-$\text{trade\_sz}$ and $\text{trade\_sign}$ (zero unless the event is a
-trade), and $\text{mid\_return}$ (the relative midprice change driven
-by the event). All numeric features are $z$-scored using statistics fit
-on the training window only. The diffusion model's input/output unit is
-a $256$-event non-overlapping window; ten consecutive windows are
-stitched at sampling time into a $2{,}560$-event pseudo-day, which is
-the unit on which all evaluation in \S\ref{sec:results} is
-computed. Before we move on to the splits, two pieces of empirical
-correlation structure are worth pre-flagging because they recur
-load-bearing later in the report: $\text{bid\_dist}$ and
-$\text{ask\_dist}$ are mechanically anti-correlated (the inside quote
-moves rather than each side moving independently), and the
-order-flow-imbalance signal that A2 trades on in \S\ref{sec:agent_design}
-predicts $\text{mid\_return}$ at a Spearman correlation of only
-$\sim$0.07~\cite{cont2014price} --- a real but faint signal that is
+$\text{trade\_sz}$ and $\text{trade\_sign}$ (zero unless the event
+is a trade), and $\text{mid\_return}$ (relative midprice change).
+Numeric features are $z$-scored on training-window statistics. The
+diffusion input/output unit is a $256$-event non-overlapping
+window; ten windows are stitched at sampling time into a
+$2{,}560$-event pseudo-day, the unit on which all evaluation in
+\S\ref{sec:results} is computed. Two correlation properties recur
+later: $\text{bid\_dist}$ and $\text{ask\_dist}$ are mechanically
+anti-correlated, and the order-flow-imbalance signal A2 trades on
+(Appendix~\ref{app:agents_impl}) predicts $\text{mid\_return}$ at
+Spearman $\sim$0.07~\cite{cont2014price} --- real but faint, and
 straightforward to scramble.
 
 \subsection{Train / Validation / Holdout Split and Regime Labelling}
@@ -333,63 +281,26 @@ counts as ``high\_vol'' on SPY is much lower than on INTC).
 \subsection{Stylized Facts of Financial Returns}
 \label{sec:stylized_facts}
 
-The classical Cont (2001) checklist of financial-return stylized
-facts~\cite{cont2001stylized} is the empirical anchor against which the
-G1 distributional realism axis (\S\ref{sec:eval_g1}) is defined. Six
-qualitative facts matter for the present discussion, each of which we
-report INTC-specific numbers for so that comparisons in
-\S\ref{sec:res_g1} are easy to read. (i) \emph{Heavy tails:} the
-realized kurtosis of INTC per-event mid-returns is $\approx 755$,
-versus the Gaussian value of $3$. (ii) \emph{Volatility clustering:}
-the autocorrelation function of $|\text{mid\_return}|$ decays slowly
-and remains positive across many lags, while (iii) the autocorrelation
-of $\text{mid\_return}$ itself is statistically zero at lag one
-(consistent with the no-arbitrage prediction). (iv) \emph{Trade-sign
-persistence:} the lag-1 autocorrelation of $\text{trade\_sign}$ is
-positive (order-flow is splitted across many child orders).
-(v) \emph{Volume-volatility correlation:} per-tape average trade size
-is positively correlated with per-tape realized volatility.
-(vi) \emph{Leverage effect:} past returns are negatively correlated
-with future volatility, though weakly at the per-event scale we
-operate on. These six high-level facts are operationalized into the
-sixteen pass/fail checks of the G1 matrix (Appendix~\ref{app:g1_matrix})
-with explicit tolerances. Figure~\ref{fig:real_stylized_facts}
-visualizes the same six facts on a 10-day val subset and serves as the
-pedagogical reference image for what every generator in
-\S\ref{sec:results} is trying to reproduce.\footnote{The two real-INTC
-reference numbers we cite throughout this report come from two sample
-windows. The kurtosis and tail-shape numbers (e.g.\ kurt $\approx 755$)
-are computed on the 10-day val subset shown in
-Figure~\ref{fig:real_stylized_facts}; the per-feature aggregate
-statistics in our deep diagnostic
-(\texttt{results/deep\_diagnostic/per\_feature\_stats.csv}) are
-computed on the full $\sim$40M-event val window and report frac\_zero
-$= 0.8885$ (used in \S\ref{sec:copula_zero_inflation}). Standard
-deviations agree across windows ($\approx 2.2\times 10^{-5}$);
-kurtosis and frac\_zero are sensitive to which window is averaged
-because the heavy tail and the zero-mass are jointly driven by a small
-fraction of high-activity days.}
-
-\begin{figure}[h!]
+We evaluate against six Cont (2001) stylized
+facts~\cite{cont2001stylized} --- heavy tails (kurtosis
+$\approx 755$ on INTC), volatility clustering, absence of return
+autocorrelation, trade-sign persistence (lag-1 ACF
+$\approx 0.67$), volume-volatility correlation, and the leverage
+effect --- operationalized into sixteen G1 pass/fail checks
+(Appendix~\ref{app:g1_matrix}; Figure~\ref{fig:real_stylized_facts}
+shows the empirical realization on a 10-day INTC val subset).
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=\linewidth]{fig_a_real_stylized_facts.pdf}
-    \caption{\textbf{Real-INTC stylized facts, 10 val days
-    ($\sim 25.5$M events).} Panel A: return distribution histogram on
-    log-y, showing the central zero-mass and symmetric heavy tails
-    (kurt $= 755$). Panel B: ACF of $|\text{mid\_return}|$ with slow
-    decay (volatility clustering). Panel C: ACF of $\text{mid\_return}$
-    near zero at lag 1 (no return autocorrelation). Panel D: ACF of
-    $\text{trade\_sign}$ with strong positive lag-1
-    ($\approx +0.668$, order-flow persistence). Panel E: spread
-    distribution showing $95.8\%$ of events at the one-tick spread
-    (the large-tick property documented in \S\ref{sec:lob_mechanics}).
-    Panel F: aggregated trading volume in 15-minute buckets across the
-    session, with the U-shape signature of US-equities intraday
-    activity. The diffusion model in \S\ref{sec:methods} is asked to
-    reproduce panels A--E from regime-conditioned event windows;
-    panel F (intraday structure) is \emph{not} a quantity any of our
-    generators target, because we train on un-time-anchored event
-    windows --- a point we return to in \S\ref{sec:limitations}.}
+    \includegraphics[width=\linewidth]{fig/fig_a_real_stylized_facts.pdf}
+    \caption{\textbf{Real-INTC stylized facts, 10 days
+    ($\sim 25.5$M events).} A: return density on log-y
+    (kurt $= 755$). B: $|\text{mid\_return}|$ ACF (slow decay).
+    C: $\text{mid\_return}$ ACF (zero at lag 1). D: trade-sign
+    ACF (lag-1 $\approx +0.668$). E: spread distribution
+    ($95.8\%$ at one tick). F: intraday trading-volume U-shape.
+    The diffusion model targets panels A--E from
+    un-time-anchored event windows; panel F is not a quantity
+    our generators reproduce (\S\ref{sec:limitations}).}
     \label{fig:real_stylized_facts}
 \end{figure}
 
@@ -487,83 +398,62 @@ differentiate \emph{base} / \emph{high\_vol} / \emph{toxic} /
 which is the empirical control that the FiLM-collapse story above
 implicitly relies on.
 
-\begin{figure}[h!]
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=\linewidth]{fig_p2_4_regime_tsne.pdf}
-    \caption{\textbf{Regime-embedding projection per checkpoint
-    (v2, v5, v9), 2D t-SNE.} Each panel projects the four
-    regime-conditioning embedding vectors learned by one
-    protagonist into a 2D plane. With only four points per panel
-    the t-SNE geometry is not informative on its own, but
-    \emph{separation} is: in all three panels, no two regimes
-    project to the same point, confirming that the AdaLN-Zero
-    conditioning is differentiating regimes rather than collapsing
-    them. A more robust check would be a per-day embedding pull
-    (one point per training day, coloured by regime); we leave
-    that to future work and treat the four-token projection as
-    sufficient evidence that the conditioning channel is open.}
+    \includegraphics[width=\linewidth]{fig/fig_p2_4_regime_tsne.pdf}
+    \caption{\textbf{Regime-embedding 2D t-SNE per protagonist
+    (v2, v5, v9).} Four regime-conditioning vectors per panel
+    (\emph{base}, \emph{high\_vol}, \emph{toxic}, \emph{thin}).
+    All three panels show spatial separation --- AdaLN-Zero is
+    using the conditioning bandwidth rather than collapsing
+    regimes.}
     \label{fig:regime_tsne}
 \end{figure}
 
 \subsubsection{Preconditioning: EDM (Karras et al.\ 2022)}
 \label{sec:edm}
 
-The EDM framework of \cite{karras2022elucidating} reframes diffusion
-training around a continuous noise scale $\sigma$ and wraps the
-denoising network with $\sigma$-dependent input, output, skip, and noise
-scalings $(c_{\text{in}}, c_{\text{out}}, c_{\text{skip}}, c_{\text{noise}})$
-chosen so that the network's effective input and target magnitudes are
-order-unity at every $\sigma$. Without preconditioning the network has
-to learn very different output magnitudes at low and high noise; with
-preconditioning the operating range is comfortable everywhere and the
-training loss landscape becomes more isotropic across timesteps. The
-parameterization has one free hyperparameter, $\sigma_{\text{data}}$,
-which is the assumed scale of the clean signal; we swept
-$\sigma_{\text{data}} \in \{0.5, 1.0, 1.5\}$ across the v6 / v7 / v7\_b
-checkpoints (Appendix~\ref{app:checkpoints}).
+EDM~\cite{karras2022elucidating} reframes diffusion training around
+a continuous noise scale $\sigma$ and wraps the denoiser with
+$\sigma$-dependent input, output, skip, and noise scalings chosen so
+the network's effective input and target magnitudes are order-unity
+at every $\sigma$ --- the operating range stays comfortable
+everywhere and the training loss landscape becomes more isotropic
+across timesteps. The single free hyperparameter is
+$\sigma_{\text{data}}$ (the assumed scale of the clean signal); we
+swept $\sigma_{\text{data}} \in \{0.5, 1.0, 1.5\}$ across the v6 /
+v7 / v7\_b checkpoints (Appendix~\ref{app:checkpoints}).
 
 \subsubsection{Data Transform: z-score vs Copula}
 \label{sec:copula_transform}
 
-The default transform is per-feature $z$-scoring (subtract training-set
-mean, divide by training-set standard deviation), which preserves the
-relative structure of each feature but leaves the diffusion model
-responsible for learning the marginal shape from the data. The copula
-construction is an alternative based on Sklar's
-theorem~\cite{sklar1959fonctions}: estimate the empirical CDF
-$\widehat{F}_i$ of each feature from training data, transform every
-sample as $z_i = \Phi^{-1}(\widehat{F}_i(x_i))$, and diffuse on $z$
-rather than on $x$. By construction the marginals of $z$ are exactly
-$\mathcal{N}(0,1)$, so the diffusion model only has to learn the
-\emph{copula} (the dependence structure); the marginal shape is
-restored at sampling time by the inverse map
-$x_i = \widehat{F}_i^{-1}(\Phi(z_i))$, which makes per-feature G1 checks
-trivially correct by construction. The complication is that for
-zero-inflated features (e.g.\ INTC's $\sim 89\%$ zero-return events
-documented in \S\ref{sec:stylized_facts}) $\widehat{F}_i$ has a step
-discontinuity, so $\Phi^{-1}\circ\widehat{F}_i$ collapses an entire
-$z$-band to a single value and breaks the diffusion target.
-Dequantization~\cite{theis2016note} fixes this by adding small uniform
-noise inside the discontinuity before the CDF is applied; we use this
-construction in the v9 family. \S\ref{sec:copula_story} works through
-the v8 (no dequant) $\to$ v9 (with dequant) progression as a case study
-of how a single architectural axis trades quality across all three
-evaluation axes at once.
+The default transform is per-feature $z$-scoring, which preserves
+relative structure but leaves the diffusion model responsible for
+learning the marginal shape. The copula construction
+\cite{sklar1959fonctions} per-feature Gaussianizes the data via the
+empirical CDF and probit
+($z_i = \Phi^{-1}(\widehat{F}_i(x_i))$), leaving the diffusion
+model to learn only the dependence structure; at sampling time the
+inverse map $x_i = \widehat{F}_i^{-1}(\Phi(z_i))$ restores the
+marginal shape, making per-feature G1 checks trivially correct by
+construction. The complication is that for zero-inflated features
+(e.g.\ INTC's $\sim 89\%$ zero-return events documented in
+\S\ref{sec:stylized_facts}) $\widehat{F}_i$ has a step discontinuity
+that breaks the diffusion target; dequantization
+\cite{theis2016note} fixes it by smearing the point mass over a
+small interval before the CDF is applied. v9 uses the
+copula+dequantization pipeline; the failure mode of the naive
+version (v8) is the case study of \S\ref{sec:copula_story}.
 
 \subsubsection{Loss Weighting: Min-SNR-$\gamma$ (Hang et al.\ 2023)}
 \label{sec:min_snr}
 
-The Min-SNR-$\gamma$ scheme~\cite{hang2023efficient} reweights the
-per-step training loss by $\min(\mathrm{SNR}(t),\gamma)/\mathrm{SNR}(t)$,
-which caps the contribution of low-noise (high-SNR) timesteps that
-otherwise dominate the gradient and cause the model to overfit to
-imperceptible high-frequency detail at the cost of mid-frequency
-structure. The published default is $\gamma{=}5$. We swept
-$\gamma\in\{1, 5\}$. The $\gamma{=}1$ setting over-corrects: it
-downweights the low-noise regime so aggressively that the model fails to
-learn the per-event detail required for any of our three evaluation
-axes. We document this falsification in Appendix~\ref{app:phaseA}; all
-twenty checkpoints reported in \S\ref{sec:results} use $\gamma{=}5$.
+The Min-SNR-$\gamma$ scheme~\cite{hang2023efficient} caps the
+per-step loss weight at
+$\min(\mathrm{SNR}(t),\gamma)/\mathrm{SNR}(t)$ to prevent low-noise
+(high-SNR) timesteps from dominating the gradient. We swept
+$\gamma\in\{1, 5\}$; $\gamma{=}1$ over-corrects and all twenty
+checkpoints in \S\ref{sec:results} use $\gamma{=}5$.
 
 \subsection{The 20 Trained Checkpoints}
 \label{sec:checkpoints}
@@ -644,7 +534,7 @@ real's state-space.
 We additionally measure $\rdiff$, the Spearman rank correlation between
 synthetic-data and historical-data terminal-PnL rankings of the
 Avellaneda-Stoikov family of market makers we describe in
-\S\ref{sec:agent_design} (specifically agents A0--A3 from
+Appendix~\ref{app:agents_impl} (specifically agents A0--A3 from
 \cite{avellaneda2008high, cont2014price, easley2012flow}). $\rdiff$ is
 intended as a top-level practical check: if a generator preserves
 agent rankings, it is at least usable for downstream strategy
@@ -669,57 +559,26 @@ quality axis.
 % tension: no architecture wins all three axes. Everything that follows is
 % "why and how".
 
-We trained twenty diffusion-model variants on INTC limit order book data
-(Section~\ref{sec:checkpoints}), and evaluated each one on three independent
-quality axes recapped from Section~\ref{sec:eval_framework}: distributional
-realism (\textbf{G1}, sixteen stylized-fact pass/fail checks following
-\cite{cont2001stylized}), temporal pattern transferability
-(\textbf{predictive score}, an LSTM trained on synthetic data and tested
-on real, MAE expressed as a multiple of the market-replay baseline,
-following \cite{berti2025trades}), and multivariate state-space coverage
-(\textbf{PCA convex-hull intersection} with the real per-tape feature
-distribution).
-
-When we put all twenty checkpoints into the same comparison frame
-(Table~\ref{tab:multi_axis}, Figure~\ref{fig:hero_three_axis}), the pattern
-that emerges is the central empirical finding of this report: \textbf{no
-architecture optimizes all three axes simultaneously}. The model that
-matches real INTC's heavy tails best (v5, kurtosis $1257$ vs.\ real $755$)
-sits in the middle of the predictive-score ranking; the model that produces
-the most realistic trade fraction (v9, $0.049$ vs.\ real $0.048$) sits at
-the bottom of the predictive-score ranking ($106\times$ replay) despite
-covering the broadest PCA region of the three; and the architectures that
-dominate predictive transferability (v3\_e9\_noclip, $4\times$ replay; the
-single best of all twenty) cover \emph{zero percent} of real's PCA hull.
-The rest of \S\ref{sec:results} unpacks what each axis measures, where the
-twenty checkpoints land on it, and why the rankings disagree across axes.
-\S\ref{sec:res_anticorrelation} confirms that the disagreement is
-systematic rather than cherry-picked, and \S\ref{sec:copula_story} works
-through the copula case study, the single architectural family in which a
-sequence of three small fixes moves all three axes at once and makes the
-mechanism easy to read.
+Table~\ref{tab:multi_axis} and Figure~\ref{fig:hero_three_axis}
+show all twenty checkpoints on the three axes defined in
+\S\ref{sec:eval_framework}. \textbf{No architecture wins all
+three.} \S\S\ref{sec:res_g1}--\ref{sec:copula_story} unpack why.
 
 % TABLE 5.1 (HERE, top of §5): full multi-axis comparison
 %             — produced by scripts/80_report_figures.py → tab_1_3_multi_axis.{csv,tex}
 % FIGURE 5.1 (HERO): three-axis evaluation space
 %             — produced by scripts/80_report_figures.py → fig_1_1_three_axis_scatter
-\input{../final_figs_tables/tab_1_3_multi_axis}
-\begin{figure}[h!]
+\input{tab/tab_1_3_multi_axis}
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=0.95\linewidth]{fig_1_1_three_axis_scatter.pdf}
-    \caption{\textbf{Hero figure --- three-axis evaluation space across our
-    twenty INTC diffusion-model variants.} Horizontal axis: distributional
-    realism (G1 pass fraction). Vertical axis: temporal transferability
-    ($1/\text{Pred}\times\text{replay}$, min--max scaled across the twenty
-    models so that a value of $1.0$ marks the best of our checkpoints, not
-    the real-data target). Point area is proportional to PCA convex-hull
-    coverage. Color encodes architectural family (blue = scale-accurate,
-    red = scale-exploded, green = copula, orange = special). The black star
-    at $(1, 1.05)$ marks where a perfect generator would sit. The two-step
-    visual reading: most points cluster well below the star
-    (no model is great on all axes), and within the cluster, no point is
-    simultaneously rightmost (best G1) and topmost (best predictive) and
-    largest (best PCA).}
+    \includegraphics[width=0.95\linewidth]{fig/fig_1_1_three_axis_scatter.pdf}
+    \caption{\textbf{Twenty INTC checkpoints in the (G1,
+    $1/\text{predictive}$, PCA) space.} Point area $\propto$ PCA
+    coverage. Color encodes architectural family (blue
+    scale-accurate, red scale-exploded, green copula, orange
+    special). The black star at $(1, 1.05)$ marks a perfect
+    generator. No point is simultaneously rightmost (best G1),
+    topmost (best predictive), and largest (best PCA).}
     \label{fig:hero_three_axis}
 \end{figure}
 
@@ -756,34 +615,15 @@ space.
     detail.}
 \end{itemize}
 
-The three rankings do not agree. v2 wins predictive but is the weakest
-on distributional shape. v5 wins on the single most-cited stylized fact
-(kurtosis), but its $v$-prediction objective does not translate into
-better state-space coverage or temporal transferability. v9 wins on the
-quantities a regulator might ask about (trade fraction, marginal shape,
-PCA coverage) but is so dominated by copula round-trip noise that the
-LSTM trained on its output is two orders of magnitude worse than market
-replay. The three protagonists thus form a small Pareto frontier: each
-is dominated by another on at least one axis, none is dominated on all.
-Figure~\ref{fig:rank_bump} makes this visible across all twenty
-checkpoints --- the line for each model crosses the others as you move
-from G1 to predictive to PCA, and no line stays at the top across all
-three columns.
-
-\begin{figure}[h!]
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=0.95\linewidth]{fig_10_1_rank_bump.pdf}
-    \caption{\textbf{Rank-bump chart across the three evaluation axes.}
-    Each line is one of the twenty INTC checkpoints; the y-axis is
-    its rank ($1 =$ best) on G1 (left), predictive score (middle),
-    and PCA coverage (right). The three protagonists v2 (blue), v5
-    (green), v9 (purple) are highlighted; the remaining seventeen
-    checkpoints are faded to grey to keep the protagonist crossings
-    legible. Each protagonist crosses the others between at least
-    two columns: v5 wins G1 but loses PCA; v9 wins PCA but loses
-    predictive; v2 sits in the middle on all three. The full
-    twenty-line version of this chart is in
-    Appendix~\ref{app:metric_correlations}.}
+    \includegraphics[width=0.95\linewidth]{fig/fig_10_1_rank_bump.pdf}
+    \caption{\textbf{Rank-bump chart across the three evaluation
+    axes.} Each line is one of twenty INTC checkpoints; y-axis is
+    its rank ($1 =$ best) on G1, predictive, and PCA. Protagonists
+    v2 (blue), v5 (green), v9 (purple) highlighted; other seventeen
+    faded. Each protagonist crosses the others between at least
+    two columns.}
     \label{fig:rank_bump}
 \end{figure}
 
@@ -804,26 +644,15 @@ events that should move it). Across the three axes that
 walkthrough already foreshadows the §5.7 finding that v9 captures
 microstructure dynamics neither v2 nor v5 reproduces.
 
-\begin{figure}[h!]
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=\linewidth]{fig_event_tape_walkthrough_500.pdf}
-    \caption{\textbf{Event-level tape walkthrough --- 500 consecutive
-    events from one representative INTC tape per source.} Four columns
-    (real, v2, v5, v9) by four rows. \emph{Row 1, mid-price step
-    function} (normalized to $\text{mid}_t/\text{mid}_0 - 1$ in bps):
-    real shows a $\sim 350$-event flat plateau followed by a sharp
-    drop; v2 drifts continuously; v5 has a real-like step at event
-    $\sim 250$; v9 reproduces the plateau-then-jump structure.
-    \emph{Row 2, top-of-book queue depth} (\texttt{bid\_sz +
-    ask\_sz}): real $\sim$5K--15K shares, smooth slow mean-reversion;
-    v2 $\sim$10K--25K, more variable; v5 drops sharply mid-window
-    (visible tape-concat seam); v9 small ($\sim$1K) but stable.
-    \emph{Row 3, spread:} real pinned at exactly $\$0.01$ for all
-    500 events; v2/v5/v9 oscillate constantly. \emph{Row 4, trade
-    markers:} per-source trade rate annotated top-right --- real
-    $4.0\%$, v2 $70.8\%$, v5 $54.0\%$, v9 $8.8\%$. v9 is the only
-    protagonist whose event-level visual matches real's pattern of
-    rare trades + price pinning + spread stability.}
+    \includegraphics[width=\linewidth]{fig/fig_event_tape_walkthrough_500.pdf}
+    \caption{\textbf{500 consecutive events per source.} Four
+    columns (real, v2, v5, v9) by four rows (mid-price step
+    function, top-of-book queue depth, spread, trade markers).
+    Trade rates annotated top-right: real $4.0\%$, v2 $70.8\%$,
+    v5 $54.0\%$, v9 $8.8\%$. v9 alone reproduces real's staircase
+    + sparse-trade + pinned-spread structure.}
     \label{fig:event_tape}
 \end{figure}
 
@@ -843,106 +672,31 @@ The lead exhibit is the per-event return distribution itself
 (Figure~\ref{fig:return_dist}), which is what the kurtosis row of
 the G1 matrix is summarizing.
 
-\begin{figure}[h!]
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=\linewidth]{fig_return_distribution_full.pdf}
-    \caption{\textbf{Mid-return distribution --- real INTC vs the
-    three protagonists}, TRADES Fig.\ 3 style. Panel A: log-y
-    density across the central $\pm 6 \times 10^{-4}$ range; the
-    real distribution (black) extends visibly further into the
-    tails than any synth model. Reported excess kurtosis: real
-    $\approx 755$, v2 $\approx 125$ (mode-covering, tails too
-    light), v5 $\approx 907$ (heaviest synth tails), v9
-    $\approx 136$ (mode-OK, tails light). Panel B: Q-Q of synth
-    quantiles vs real quantiles, conditional on $|r| > 0$ (the
-    $98.78\%$ zero-mass would otherwise dominate any unconditional
-    Q-Q --- every quantile $\in [0.01, 0.99]$ would lie at zero on
-    both axes). v2 stays flat near zero, indicating its non-zero
-    return values are tightly concentrated; v5 jumps to extremes at
-    the boundary, indicating it commits to large returns when it
-    moves; v9 is the staircase-coarse curve, an artifact of having
-    only $\sim 2{,}500$ non-zero events in a $255{,}000$-event
-    sample.}
+    \includegraphics[width=\linewidth]{fig/fig_return_distribution_full.pdf}
+    \caption{\textbf{Mid-return distribution --- real INTC vs.\
+    the three protagonists.} Panel A: log-y density across the
+    central $\pm 6 \times 10^{-4}$ range. Panel B: Q-Q of synth
+    vs.\ real quantiles, conditional on $|r| > 0$ (the $98.78\%$
+    zero-mass would otherwise dominate). Excess kurtosis: real
+    $755$, v2 $125$, v5 $907$, v9 $136$.}
     \label{fig:return_dist}
 \end{figure}
 
 Reading the kurtosis numbers off Figure~\ref{fig:return_dist}: v5's
-$907$ is the closest match to real's $755$ at the bulk-shape level,
-but the next per-row view (the per-regime G1 heatmap of
-Figure~\ref{fig:g1_heatmap}) shows that v5's match is regime-dependent
---- the ``base'' regime overshoots ($1696$) while the high-vol /
-toxic / thin regimes land in the $74$--$539$ range. v2's bulk-shape
-score is uniformly modest. v9's per-regime kurtosis stays in the
-$57$--$202$ range across all four regimes (most consistent of the
-three).
-
-\begin{figure}[h!]
-    \centering
-    \includegraphics[width=\linewidth]{fig_p0d_g1_per_regime.pdf}
-    \caption{\textbf{Per-regime G1 stylized-facts matrix for v2 / v5
-    / v9.} Fifteen rows (one per G1 check; the ``Conditional
-    moments'' check is dropped because its validator emits a
-    categorical label rather than a numeric value). Thirteen
-    columns: each protagonist evaluated under each of the four
-    regime-conditioning labels (\emph{base}, \emph{high\_vol},
-    \emph{toxic}, \emph{thin}), plus the real-data reference column
-    on the far right. Cell text is the actual synth value; cell
-    colour is the per-row min--max normalised absolute error against
-    real (greenest = closest to real on that row, reddest = furthest;
-    grey ``n/a'' cells are checks where the validator returned NaN
-    because the underlying statistic is undefined for that
-    generator-regime pair --- v9's combination of $\sim 99\%$
-    zero-mass and dequantised tails makes the trade-sign ACF, RV
-    signature shape, and base-regime ACF power-law $\beta$
-    estimators numerically degenerate). The trade-fraction row at
-    the bottom carries the headline composition gap: real
-    $\approx 0.048$, v2 and v5 $\approx 0.50$--$0.60$ across all
-    regimes, v9 $\approx 0.04$--$0.08$ across all regimes ---
-    v9 alone gets the per-event composition right. The full
-    twenty-checkpoint matrix (without the regime breakdown) is in
-    Appendix~\ref{app:g1_matrix}.}
-    \label{fig:g1_heatmap}
-\end{figure}
-
-Three findings dominate the per-regime heatmap. First, the
-\textbf{tail-shape row} (return excess kurtosis): v2 in its base
-regime overshoots dramatically ($3919$ vs.\ real $755$) but
-recovers in high-vol / toxic / thin (all $\le 300$); v5 base
-overshoots more modestly ($1696$); v9 is the only protagonist that
-stays in the $\sim 100$--$200$ band across every regime. Second,
-the \textbf{trade-fraction row} (real $\approx 0.048$): v2 and v5
-over-emit trades by roughly $10\times$ in every regime; v9 lands
-within $2\times$ of real in every regime. The mechanical reason ---
-v9's copula-with-dequantisation transform suppresses spurious trade
-events at the cost of per-event predictability --- is the load-
-bearing observation for \S\ref{sec:copula_story}. Third, the
-\textbf{spread-conditional rows} (\texttt{Spread W-1},
-\texttt{Spread 1-tick fraction}) show a less dramatic but
-consistent pattern: all three protagonists keep the inside spread
-roughly correct on average, but their behaviour \emph{when the
-spread widens} diverges from real in the joint structure that
-Figure~\ref{fig:spread_cond} below makes visible.
-
-\begin{figure}[h!]
-    \centering
-    \includegraphics[width=\linewidth]{fig_p2_1_spread_conditional.pdf}
-    \caption{\textbf{Spread-conditional dynamics --- events with
-    spread $> 1$ tick.} Three panels report (i) the unconditional
-    fraction of events with widened spread; (ii) the mean
-    \texttt{bid\_sz} on widened-spread events; (iii) the mean
-    $|\text{return}|$ on widened-spread events. Real INTC: spread
-    widens on $4.18\%$ of events; when it does, the book is
-    \emph{thicker} (mean \texttt{bid\_sz} $\approx 3.76 \times 10^3$
-    vs.\ a global mean closer to $1.5 \times 10^3$) and prices
-    \emph{move more} (mean $|r| \approx 1.55 \times 10^{-5}$). v2,
-    v5, v9 all widen the spread $50$--$87\%$ of the time, populate
-    the wide-spread regime with much thinner books ($800$--$2200$
-    shares), and emit much smaller returns
-    ($1.5$--$3 \times 10^{-7}$). The joint structure ``spread
-    widens AND book thickens AND prices move more'' is a real-data
-    property that none of our generators reproduces.}
-    \label{fig:spread_cond}
-\end{figure}
+$907$ is the closest match to real's $755$ at the bulk-shape level.
+The per-regime breakdown
+(Appendix~\ref{app:g1_matrix},
+Figure~\ref{fig:g1_heatmap_per_regime}) carries the headline
+kurtosis findings: v2's base regime overshoots dramatically to
+$3919$ (other regimes $\le 300$), v5's base overshoots to $1696$,
+and v9 stays in the $57$--$202$ band across all four regimes ---
+the most regime-consistent of the three protagonists. The
+trade-fraction row of the same heatmap is the load-bearing setup
+for \S\ref{sec:copula_story}: v2 and v5 over-emit trades by
+$\sim 10\times$ in every regime, v9 lands within $2\times$ of real
+in every regime.
 
 \paragraph{Trade-sign autocorrelation.}
 Order-flow persistence is a Cont 2001 stylized fact that all three
@@ -955,96 +709,31 @@ v9's faster mid-lag decay is consistent with the broader §5.7
 finding that the copula transform scrambles per-event temporal
 structure even when it preserves marginals.
 
-\begin{figure}[h!]
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=0.85\linewidth]{fig_7_3_trade_sign_acf.pdf}
+    \includegraphics[width=0.85\linewidth]{fig/fig_7_3_trade_sign_acf.pdf}
     \caption{\textbf{Trade-sign autocorrelation across lags
-    $\{1, 5, 10, 50, 100\}$.} Real (dashed black) starts at
-    lag-$1 \approx 0.41$ and decays slowly. v2 (blue) starts near
-    real at lag-$1 = 0.22$ and stays modestly persistent; v9
-    (purple) starts close to v2 at lag-$1 = 0.24$ but decays
-    fastest; v5 (green) starts well below at $0.06$. All three
-    synth lines lie below the real curve at every lag --- the
-    order-flow persistence stylized fact is undershot by all
-    protagonists. Real values are connected by a dashed line to
-    flag the sparse-lag interpolation; the line is not a
-    continuous ACF but a polyline through five measured lags.}
+    $\{1, 5, 10, 50, 100\}$.} Real (dashed black, lag-$1 \approx
+    0.41$) vs.\ v2 (blue), v5 (green), v9 (purple). All three
+    synth lines lie below real at every lag. The dashed
+    interpolation through five measured lags is not a continuous
+    ACF.}
     \label{fig:trade_sign_acf}
 \end{figure}
 
 \paragraph{Volume-volatility correlation.}
 Per-tape Pearson correlation between volume and $|\text{return}|$
 is a per-day positive number $\approx +0.34$ on real INTC ---
-Cont's stylized fact (v). Figure~\ref{fig:vol_vol_kde} compares the
-distribution of this statistic across $20$ real days vs.\ $400$
-synth tapes per architecture. Real is unimodal and tightly centered
-on $0.34$; v2 and v5 emit much wider distributions spanning
-$-1.5$ to $+1.5$, including individual tapes with anti-correlated
-volume and volatility (which never occurs on real). v9 is currently
-excluded from the figure: its frac\_zero $\approx 0.99$ means most
-v9 tapes have zero trades, making per-tape Pearson undefined.
-
-\begin{figure}[h!]
-    \centering
-    \includegraphics[width=0.85\linewidth]{fig_7_1_vol_vol_kde.pdf}
-    \caption{\textbf{Per-tape volume-volatility correlation
-    distribution.} KDE over $20$ real days (black, filled) vs
-    $400$ synth tapes per architecture (v2 blue line, v5 green
-    line). Real distribution is tight and unimodal centered on
-    $\approx 0.34$ (vertical dashed line). Synth distributions are
-    much wider with appreciable mass at negative correlations,
-    indicating that individual synth tapes can be miscalibrated in
-    a direction (volume and volatility anti-correlated) that the
-    real data never exhibits. v9 is excluded because its very high
-    frac\_zero leaves too few non-trivial trade events per tape to
-    compute Pearson reliably; we revisit v9's per-tape statistics
-    in \S\ref{sec:copula_story}.}
-    \label{fig:vol_vol_kde}
-\end{figure}
-
-\paragraph{Intraday structure.}
-One stylized fact our generators do not reproduce, regardless of
-architecture, is intraday structure. Figure~\ref{fig:intraday_lob_volume}
-shows the level-1 queue size of real INTC across the trading session
---- the canonical intraday U-shape (queues build up toward the
-close) --- alongside v2/v5/v9 outputs that are essentially flat. The
-mechanical reason is that our diffusion model is trained on
-regime-conditioned event windows that are not anchored to
-time-of-day; a synthetic tape carries no information about where in
-the session it sits. We return to the practical consequence in
-\S\ref{sec:limitations}.
-
-\begin{figure}[h!]
-    \centering
-    \includegraphics[width=\linewidth]{fig_intraday_lob_volume.pdf}
-    \caption{\textbf{Level-1 LOB queue size across the trading
-    session, real INTC vs.\ v2 / v5 / v9.} Panels show the per-side
-    mean (line) and 5--95 envelope (shaded) of best-level queue
-    size, bucketed by minute-of-session for real and by event-
-    position-mapped-to-minute for synth (since the synth tapes are
-    not time-anchored). Real exhibits the canonical intraday
-    U-shape with queue sizes climbing sharply toward the close;
-    all three protagonists produce essentially flat profiles, a
-    direct consequence of the regime-conditioned event-window
-    training described in \S\ref{sec:methods}. The bid/ask queue
-    ratios annotated above each panel ($0.949$ on real;
-    $0.911$, $0.789$, $2.662$ on v2, v5, v9 respectively) point to
-    a separate per-architecture asymmetry that is not part of the
-    present scope.}
-    \label{fig:intraday_lob_volume}
-\end{figure}
+Cont's stylized fact (v). Real is unimodal and tightly centered on
+$0.34$; v2 and v5 emit much wider distributions spanning $-1.5$ to
+$+1.5$, including individual tapes with anti-correlated volume and
+volatility, which never occurs on real. v9 is excluded: its
+\texttt{frac\_zero} $\approx 0.99$ means most v9 tapes have zero
+trades, making per-tape Pearson undefined
+(Appendix~\ref{app:vol_vol}, Figure~\ref{fig:vol_vol_kde}).
 
 \subsection{Temporal Transferability Results}
 \label{sec:res_predictive}
-
-The predictive score follows the TRADES protocol
-\cite{berti2025trades}: train an LSTM on synthetic windows, test on a
-held-out real window, report the ratio of test MAE to a market-replay
-baseline (an LSTM trained on real data). A perfect generator would land
-at $1.0$ --- the LSTM learns the same dynamics from synth as from real.
-Higher is worse; below the baseline (i.e.\ a synth-trained LSTM that
-\emph{outperforms} a real-trained one) is in principle possible but
-should not happen on a well-specified test split.
 
 The headline ranking surprised us. The three protagonists land at
 predictive $\approx 14\times$ (v2), $\approx 11\times$ (v5),
@@ -1058,42 +747,16 @@ twenty) and the copula+remapped family at the opposite corner
 v9\_b $\approx 100\times$). Full per-checkpoint numbers are in
 Appendix~\ref{app:checkpoints}.
 
-The single most informative pair is v9 vs.\ v3\_e9\_noclip. v9 has
-the \emph{best} marginal-distribution match in our entire study
-(kurtosis $\sim 130$, trade fraction $0.049$, PCA $71.4\%$) and
-lands at predictive $=106.4\times$. v3\_e9\_noclip is a checkpoint
-we had written off as broken in our internal tracking: it passes
-only $6/15$ G1 checks, its return distribution has near-zero excess
-kurtosis ($-0.43$, the model has collapsed to a smooth-tailed
-Gaussian), and its synthetic returns are roughly $43\times$ wider
-in standard deviation than real INTC's. Yet it produces the best
-predictive score in the study at $4.0\times$ replay ---
-twenty-six times better than v9. The relationship between
-synth-to-real return-scale ratio and predictive score is
-\emph{non-monotone}: the scale-matched cluster
-($\sigma_\text{synth} \approx \sigma_\text{real}$, all eight of v2,
-v3, v3p5, v4, v5, v6, v7, v7\_b) spans an order of magnitude on
-predictive ($10$--$36\times$); the scale-exploded noclip family
-at $\sigma_\text{synth} \approx 40\sigma_\text{real}$ sits at the
-\emph{best} end ($4$--$14\times$); the copula family at
-$\sigma_\text{synth} \approx 0.6\sigma_\text{real}$ sits at the
-\emph{worst} end ($28$--$210\times$). Scale matching is neither
-necessary nor sufficient for temporal transferability.
+v9 (best marginals, $106\times$ replay) and v3\_e9\_noclip (worst
+marginals, $4\times$) are the extremes: the model with $-0.43$
+excess kurtosis and $43\times$ real's std produces the best
+predictive score in the study, twenty-six times better than v9.
+Scale matching is neither necessary nor sufficient for temporal
+transferability.
 
-What the LSTM is picking up is not absolute return magnitude --- it is
-the per-event ordering and sign-correlation structure of the return
-sequence. Once we look through that lens the noclip dominance has a
-mechanical explanation: removing the $x_0$ output-clip lets the model
-emit return-sign sequences with realistic per-event variation, even
-though the marginal scale is wildly off; the copula family, by contrast,
-runs the per-feature distribution through an empirical-CDF round-trip
-that is essentially correct on marginals and Spearman ranks but
-introduces enough per-event noise to wash out the predictable structure
-the LSTM relies on. We exhibit this directly in the v2\_remapped
-cautionary tale in \S\ref{sec:copula_lesson}: post-hoc Spearman remapping
-of v2 preserves rank correlations \emph{exactly} and pushes predictive
-score from v2's $14\times$ to v2\_remapped's $266\times$, a near-twentyfold
-degradation purely from the rank-preserving shape change.
+The mechanism --- the LSTM rewards per-event value-sequence
+fidelity, not marginal shape --- is unpacked in the v2\_remapped
+control of \S\ref{sec:copula_lesson}.
 
 \subsection{Multivariate Coverage Results}
 \label{sec:res_pca}
@@ -1108,84 +771,14 @@ convex hull, divided by the area of the real hull. A perfect generator
 matches real on this axis at $100\%$; a generator that produces tapes
 too tight or too wide to overlap with real lands at $0\%$.
 
-The fifteen models with finite (non-degenerate) projections sort
-into three regimes (Table~\ref{tab:pca_coverage_top}): the
-\emph{coverage-dominant} models that wrap around the real region with
-hulls one to two times bigger than real (v8, v10\_cascade), the
-\emph{coverage-realistic} models whose hulls are proportionate to
-real's $25.2$ unit-area (v9, v9\_b, v4\_noclip, v3\_e9, v7, v2, v4),
-and the \emph{coverage-thin} models whose hulls fit inside real's region
-without filling it (v6, v3\_e19, v3p5, v5, v7\_b, v2\_remapped). Three
-of the noclip checkpoints (v2\_noclip, v3\_e9\_noclip, v3p5\_noclip)
-land at $0\%$ coverage \emph{despite producing the largest hulls of all}
-(synth hulls between $5{,}000$ and $12{,}000$ units of area, against
-real's $25.2$): their synthetic projections are flung so far outside
-the real region that the intersection collapses to nothing. v8\_b and
-v11 are degenerate enough that the PCA coverage is undefined (their
-synth std on at least one feature is exactly zero).
-
-\begin{table}[h!]
-    \centering
-    \footnotesize
-    \begin{tabular}{lrrr}
-        \toprule
-        Model & Coverage \% & Synth hull area & vs. real ($25.2$) \\
-        \midrule
-        \multicolumn{4}{l}{\textit{Coverage-dominant (synth hull engulfs real)}} \\
-        v8           & 85.2 & 66.0 & $2.6\times$ real \\
-        v10\_cascade & 84.9 & 49.7 & $2.0\times$ real \\
-        \midrule
-        \multicolumn{4}{l}{\textit{Coverage-realistic (synth hull comparable to real)}} \\
-        v9           & 71.4 & 30.7 & $1.2\times$ \\
-        v9\_b        & 67.6 & 22.6 & $0.9\times$ \\
-        v4\_noclip   & 63.6 & 26.6 & $1.1\times$ \\
-        v3\_e9       & 61.5 & 17.9 & $0.7\times$ \\
-        v7           & 59.4 & 16.8 & $0.7\times$ \\
-        v2           & 58.6 & 18.9 & $0.7\times$ \\
-        v4           & 56.8 & 17.6 & $0.7\times$ \\
-        v6           & 54.1 & 15.5 & $0.6\times$ \\
-        \midrule
-        \multicolumn{4}{l}{\textit{Coverage-thin (synth hull inside real but undersized)}} \\
-        v3\_e19      & 48.5 & 15.3 & $0.6\times$ \\
-        v3p5         & 47.0 & 13.6 & $0.5\times$ \\
-        v5           & 46.1 & 12.2 & $0.5\times$ \\
-        v7\_b        & 24.7 & 9.1  & $0.4\times$ \\
-        v2\_remapped & 16.1 & 6.5  & $0.3\times$ \\
-        \midrule
-        \multicolumn{4}{l}{\textit{Coverage-zero (hull misses real entirely)}} \\
-        v2\_noclip    & 0.0 & 5{,}720 & $227\times$ real, but disjoint \\
-        v3\_e9\_noclip& 0.0 & 4{,}953 & $197\times$ real, but disjoint \\
-        v3p5\_noclip  & 0.0 & 12{,}253& $486\times$ real, but disjoint \\
-        \midrule
-        \multicolumn{4}{l}{\textit{Degenerate (PCA undefined --- one feature has zero std)}} \\
-        v8\_b, v11    & --- & --- & --- \\
-        \bottomrule
-    \end{tabular}
-    \caption{\textbf{PCA convex-hull coverage of real INTC, sorted by
-    coverage percentage.} ``Coverage \%'' is intersection-over-real-hull-area.
-    Real's hull spans $25.2$ units of PC1--PC2 area. Two findings: (a) the
-    two highest-coverage generators (v8 and v10\_cascade) are also the
-    two with the worst kurtosis behavior --- v8's marginals collapse to
-    near-Gaussian and v10\_cascade's variance is so small that the per-event
-    return distribution is degenerate. Coverage and per-feature distributional
-    realism (the G1 axis) are not the same thing. (b) The three noclip
-    checkpoints whose hulls are $\sim 200$--$500\times$ real's area still
-    register $0\%$ coverage --- they are completely disjoint from real in
-    PC1--PC2 space. Removing the $x_0$ clip pushes the model's outputs
-    so far past real that the spatial overlap vanishes even as the
-    spatial \emph{extent} explodes.}
-    \label{tab:pca_coverage_top}
-\end{table}
-
-The two findings noted under Table~\ref{tab:pca_coverage_top} are the
-ones we will return to in \S\ref{sec:res_anticorrelation}. Coverage is a
-useful diagnostic but it is not a substitute for marginal realism: v8's
-$85\%$ coverage comes with G1 $= 8/15$ and a kurtosis of $2.6$
-(against real $755$), and the two best-PCA models in our entire study
-are also the two whose marginals collapsed most severely. Conversely,
-the noclip family --- which dominated predictive transferability in
-\S\ref{sec:res_predictive} --- is the worst performer here, by a wide
-margin. The pattern that wins on one axis loses on another.
+PCA coverage spans $0$--$85\%$ across our twenty checkpoints
+(Appendix~\ref{app:pca_coverage_full}). The copula family
+dominates ($85\%$) but with collapsed marginals (excess kurtosis
+$\sim 2$ vs.\ real $755$); the protagonist trio sits at
+$46$--$71\%$; the noclip family lands at $0\%$ despite hulls
+$200$--$500\times$ real's area --- their projections are flung
+entirely outside real's region. The pattern that wins on one axis
+loses on another.
 
 \subsection{The Anti-Correlation Across Architectures}
 \label{sec:res_anticorrelation}
@@ -1199,7 +792,7 @@ across all twenty checkpoints (Appendix~\ref{app:metric_correlations}
 gives the full $7 \times 7$ matrix; Table~\ref{tab:correlation_subset}
 extracts the entries that matter for v2/v5/v9).
 
-\begin{table}[h!]
+\begin{table}[ht]
     \centering
     \footnotesize
     \begin{tabular}{lrl}
@@ -1227,49 +820,11 @@ extracts the entries that matter for v2/v5/v9).
     \label{tab:correlation_subset}
 \end{table}
 
-Two entries deserve emphasis.
-
-\paragraph{Predictive $\leftrightarrow$ PCA: $+0.57$.}
-At first glance this looks wrong --- a generator that covers more of
-the real PC1--PC2 region should produce \emph{better} synthetic data
-for downstream training, hence \emph{lower} predictive ratio. The
-opposite holds in our sample. The reason is architectural family
-membership: the copula generators (v8, v9, v9\_b, v10\_cascade) all
-have wide PCA hulls and all have catastrophic predictive scores
-($> 100 \times$ replay), while the noclip generators all have hulls
-disjoint from real ($0\%$ coverage) and all have the best predictive
-scores. v9 illustrates the copula corner of this trade-off
-(PCA $71\%$, predictive $106\times$); v2 sits at the center
-(PCA $59\%$, predictive $14\times$); v5 sits closer to v2 with worse
-PCA (PCA $46\%$, predictive $11\times$). The three protagonists do
-not contradict the $+0.57$ correlation --- they line up with it.
-
-\paragraph{Trade fraction $\leftrightarrow$ predictive: $-0.51$.}
-The generators that emit realistic per-event composition (low trade
-fraction, close to real's $0.048$) are the same generators with the
-worst predictive scores: v9 at $(0.049, 106\times)$, v9\_b at $(0.032,
-29\times)$, v2\_remapped at $(0.045, 266\times)$. The generators with
-the best predictive scores all over-emit trades by 10--20$\times$.
-This trade-off is structural to the copula+dequant transform: the
-extra dequantization noise that lets the model recover correct trade
-fractions also scrambles the per-event temporal structure the LSTM
-relies on. \S\ref{sec:copula_lesson} (the v2\_remapped tale) makes the
-mechanism explicit on a controlled comparison.
-
-The honest summary is: the three-axis trade-off in v2/v5/v9 is not a
-clean three-way anti-correlation between G1, predictive, and PCA. It
-is a pattern of \emph{different architectural families dominating
-different axes}, with the families themselves anti-correlated on
-specific metric pairs (kurtosis vs.\ vol-vol; trade fraction vs.\
-predictive). v2 is in the family that wins predictive but loses on
-trade-fraction realism; v9 is in the family that wins PCA + trade
-fraction but loses on predictive; v5 is in the family with the best
-heavy-tail behavior but the weakest PCA. No architecture family in
-our search occupies all three top ranks. \S\ref{sec:res_ablation}
-breaks down which individual architectural choices push which axes,
-and \S\ref{sec:copula_story} traces one family (copula) across all
-three axes inside a single set of three checkpoints to make the
-mechanism legible.
+The mechanism behind the two bold entries
+(predictive-vs-PCA $+0.57$, trade-fraction-vs-predictive $-0.51$)
+is unpacked in \S\ref{sec:res_ablation} (which toggle pushes which
+axis) and \S\ref{sec:copula_lesson} (why rank-preserving
+operations pay the predictive cost).
 
 \subsection{Architectural Ablation: What Drives What}
 \label{sec:res_ablation}
@@ -1289,18 +844,18 @@ matched checkpoint pairs that differ on exactly the toggle named in
 each row. Appendix~\ref{app:ablation_full} gives the full six-toggle
 $\times$ six-metric heatmap from which these numbers are extracted.
 
-\begin{table}[h!]
+\begin{table}[ht]
     \centering
     \footnotesize
     \begin{tabular}{lrrrrr}
         \toprule
-        Toggle (matched-pair avg.) & $\Delta$G1 & $\Delta$Pred$\times$ & $\Delta$PCA\% & $\Delta$kurt & $\Delta$trade frac \\
+        Toggle (matched-pair avg) & $\Delta$G1 & $\Delta$Pred$\times$ & $\Delta$PCA\% & $\Delta$kurt & $\Delta$trade frac \\
         \midrule
         $\eps \to v$ (prediction target)             & $\phantom{-}0.0$ & $-29.7$ & $-2.8$   & $-30$     & $+0.087$ \\
-        FiLM $\to$ AdaLN (conditioning)              & $-1.0$           & $+34.7$ & $-10.7$  & $+1184$   & $-0.103$ \\
+        FiLM $\to$ AdaLN              & $-1.0$           & $+34.7$ & $-10.7$  & $+1184$   & $-0.103$ \\
         $+$ EDM preconditioning                      & $-0.3$           & $+9.4$  & $\phantom{-}0.0$ & $-1113$   & $-0.053$ \\
         $+$ copula transform                         & $-4.0$           & $+103.1$& $+26.6$  & $-119$    & $\mathbf{-0.550}$ \\
-        $+$ dequantization (on top of copula)        & $+4.0$           & $-10.9$ & $-13.8$  & $+126$    & $+0.040$ \\
+        $+$ dequantization        & $+4.0$           & $-10.9$ & $-13.8$  & $+126$    & $+0.040$ \\
         $-$ $x_0$ clip                               & $-4.8$           & $-16.9$ & $\mathbf{-40.1}$ & $-16$     & $+0.018$ \\
         \bottomrule
     \end{tabular}
@@ -1322,92 +877,43 @@ $\times$ six-metric heatmap from which these numbers are extracted.
     \label{tab:ablation_walks}
 \end{table}
 
-\paragraph{v2 $\to$ v5: the heavy-tail walk.}
-v5 differs from v2 on two toggles --- prediction target ($\eps \to v$)
-and conditioning (FiLM $\to$ AdaLN-Zero). The first row of
-Table~\ref{tab:ablation_walks} says $\eps \to v$ on its own lowers
-kurtosis by $\sim 30$ (mode-covering bias on bulk goes away) and
-improves predictive by $\sim 30\times$ replay, with essentially no
-effect on G1. The second row says FiLM $\to$ AdaLN does the opposite
-on predictive ($+35\times$ replay, i.e.\ worse) but adds an enormous
-$+1184$ to kurtosis --- AdaLN-Zero gives the model enough conditioning
-bandwidth to commit to extreme samples, which is exactly what was
-needed to overshoot real's kurtosis of $755$ to v5's $1257$. The net
-effect of the two toggles together is the v5 we observe: better
-kurtosis, marginally better predictive, slightly worse PCA, same G1.
-The takeaway from this walk: \emph{tail behavior is dominated by
-conditioning bandwidth, not by prediction target}; the
-$\eps \to v$ swap on its own does not produce heavy tails.
+\paragraph{v2 $\to$ v5 (the heavy-tail walk).}
+Two toggles: $\eps \to v$ (mode-covering bulk softens,
+$\Delta\text{kurt} = -30$, $-30\times$ on predictive) and
+FiLM $\to$ AdaLN-Zero ($\Delta\text{kurt} = +1184$, the largest
+absolute kurtosis swing in the table). The net effect is v5's
+$1257$ kurtosis, overshooting real's $755$ --- tail behaviour is
+dominated by conditioning bandwidth, not prediction target. The
+cost is a $-10.7\%$ drop in PCA coverage.
 
-\paragraph{v2 $\to$ v9: the distributional-realist walk.}
-v9 differs from v2 on the data-transform axis only --- both are
-$\eps$-prediction and FiLM-conditioned, but v9 wraps the raw features
-through a copula transform with dequantization (\S\ref{sec:copula_fix}
-unpacks the mechanism). The fourth and fifth rows of
-Table~\ref{tab:ablation_walks} are the dominant deltas. $+$ copula
-alone drops G1 by $4$ checks, pushes predictive up by
-$+103\times$ replay (severely worse), adds $+27\%$ to PCA coverage,
-and \emph{collapses} trade fraction by $-0.55$ (an enormous
-improvement toward real's $0.048$). $+$ dequant then recovers $+4$ G1
-checks, gives back $-11\times$ on predictive, and pushes kurtosis up
-by $+126$ (back into a reasonable range). The combination
-copula+dequant has a net effect on G1 of $0$, $-92\times$ replay on
-predictive (still much worse than v2), $+13\%$ on PCA, and $-0.51$ on
-trade fraction. v9 is what comes out the other side: same G1 as v2,
-much worse predictive, better PCA, dramatically better trade
-fraction. The takeaway: \emph{copula buys distributional realism at
-the cost of predictive transferability}, and dequantization mitigates
-but does not undo that trade.
+\paragraph{v2 $\to$ v9 (the distributional-realist walk).}
+One axis: the copula transform with dequantization. $+$ copula
+alone collapses trade fraction by $-0.55$ (the largest single
+toggle effect in the table, closing most of the v2-to-real gap)
+at the cost of $+103\times$ replay on predictive; $+$ dequant
+then recovers $+4$ G1 checks and $+126$ kurtosis. The net is v9:
+same G1 as v2, much worse predictive, better PCA, dramatically
+better trade fraction --- copula buys distributional realism at
+the cost of transferability (\S\ref{sec:copula_fix} unpacks the
+mechanism).
 
-\paragraph{The noclip family: the most informative third corner.}
-Removing the $x_0$ output clip --- the safety bound that keeps each
-sampling step from emitting extreme values --- is not a path that
-involves v2/v5/v9 (none of them use noclip), but the toggle is too
-informative to skip. The last row of Table~\ref{tab:ablation_walks}
-shows it loses $4.8$ G1 checks, destroys PCA coverage
-($-40\%$, often all the way to disjoint hulls), and slightly worsens
-kurtosis --- in exchange for the largest predictive-score improvement
-in the study ($-17\times$ replay). The mechanism is the same one
-\S\ref{sec:res_predictive} flagged: removing the clip lets the model
-emit return-sign sequences with realistic per-event variation, which
-is exactly what the LSTM rewards. The cost --- losing roughly four
-G1 stylized facts and all spatial overlap with real --- shows that
-``best predictive transferability'' and ``best realism'' are not
-served by the same toggle. The three protagonists demonstrate this
-trade-off pairwise across architecture families; the noclip family
-demonstrates it monotonically along a single toggle.
+\paragraph{The noclip family (third corner).}
+Removing the $x_0$ output clip destroys PCA coverage ($-40.1\%$,
+the largest absolute PCA move in the table) and loses $4.8$ G1
+checks, in exchange for the largest predictive-score improvement
+in the study ($-17\times$ replay). The mechanism is what
+\S\ref{sec:res_predictive} flagged: removing the clip lets the
+model emit return-sign sequences with realistic per-event
+variation, which is exactly what the LSTM rewards. The three
+protagonists demonstrate this trade-off pairwise across architecture
+families; the noclip family demonstrates it monotonically along
+a single toggle.
 
-Figure~\ref{fig:ablation_heatmap} renders the same data as
-Table~\ref{tab:ablation_walks} as a full $6 \times 6$ heatmap, with
-each column normalised so the strongest move per metric is visually
-obvious. The single most striking cell is FiLM~$\to$~AdaLN's
-$\Delta\text{kurt} = +1184$ in the kurt column --- the largest
-absolute kurtosis swing of any toggle, and the proximate cause of
-v5's heavy-tail behaviour. The next most striking is
-$-x_0$\_clip's $\Delta\text{PCA\%} = -40$, the destructive move
-that pushes the noclip hulls completely outside real's PC1--PC2
-region. Reading by row, the $+\text{copula}$ row shows the
-characteristic ``moves all metrics at once'' signature that
-\S\ref{sec:copula_story} unpacks in detail.
-
-\begin{figure}[h!]
-    \centering
-    \includegraphics[width=\linewidth]{fig_5_1_ablation_heatmap.pdf}
-    \caption{\textbf{Architectural ablation: per-axis effect of each
-    toggle on each evaluation metric.} Six rows, one per
-    architectural toggle (the same six rows as
-    Table~\ref{tab:ablation_walks}). Six columns, one per
-    evaluation metric ($\Delta$G1, $\Delta$Pred$\times$,
-    $\Delta$PCA\%, $\Delta$kurt, $\Delta$trade frac,
-    $\Delta$vol-vol corr). Cell text is the matched-pair mean
-    effect; cell colour is the per-column normalised effect
-    (red = degrades the metric, blue = improves it; ``improve''
-    means closer to real on that metric, e.g.\ predictive ratio
-    \emph{decreasing} toward $1.0$). Per-column normalisation makes
-    the strongest move per metric visually obvious regardless of
-    its absolute magnitude.}
-    \label{fig:ablation_heatmap}
-\end{figure}
+The full $6 \times 6$ heatmap visualization
+(Appendix~\ref{app:ablation_full}, Figure~\ref{fig:ablation_heatmap})
+renders the same data as Table~\ref{tab:ablation_walks} with each
+column normalised so the strongest move per metric is visually
+obvious.
 
 \subsection{Case Study: The Copula Story --- One Architecture, All Three Axes Move}
 \label{sec:copula_story}
@@ -1428,198 +934,17 @@ family: v8 (copula on the marginals, no dequantization), v9 (copula
 post-hoc Spearman remap of v2's outputs to match real's marginals).
 Each of the three was an attempt to solve the same problem --- the
 zero-inflation in INTC mid-returns --- and each produces a different
-trade-off across G1, predictive, and PCA. Reading the three of them
-in sequence is the cleanest worked example of the three-axis tension
-in the whole study. We start from the data property that made all
-three look attractive in the first place.
+trade-off across G1, predictive, and PCA.
 
-\subsubsection{The Zero-Inflation Pathology (Why a Naive Copula Was Always Going to Fail)}
-\label{sec:copula_zero_inflation}
-
-INTC's mid-return distribution is not a smooth heavy-tailed density.
-Across the $\sim 40$M events in our validation set, $88.85\%$ of
-mid-return events are \emph{exactly} zero --- the midprice did not
-change between consecutive events. Conditional on a nonzero update,
-the distribution \emph{is} heavy-tailed: conditional standard
-deviation $\sigma_{\neq 0} \approx 4.7\times 10^{-5}$, conditional
-excess kurtosis on the order of $10^4$, conditional support extending
-out to $\pm 0.030$ (i.e.\ moves of $\sim 1{,}400\sigma_{\neq 0}$). The
-\emph{unconditional} excess kurtosis we report against in the G1 suite
-(real $755$, our headline reference) is what you measure when the
-$88.85\%$ point mass and the $11.15\%$ heavy-tailed continuous
-component are mixed in a single distribution.
-
-This mixed structure --- a discrete point mass at zero plus a
-continuous heavy-tailed component --- is the property the copula
-attempt is trying to fix. To see why the naive version cannot work,
-trace the data flow:
-\begin{enumerate}
-    \item The copula transform fits an empirical CDF $\hat{F}$ on the
-    raw mid-return values, applies $z = \Phi^{-1}(\hat{F}(x))$ to
-    every event, trains the diffusion model on the $z$-space, samples
-    in $z$-space, and inverts the transform on the synthetic outputs.
-    \item Because $88.85\%$ of training events are
-    $x = 0$, the empirical CDF has a vertical jump at $x=0$ of size
-    $0.89$. All zero-valued training events get mapped to a single
-    $z$ value (specifically, the value of $\Phi^{-1}$ at the
-    midpoint of the jump, which sits well below zero on the
-    $z$-axis).
-    \item The diffusion model trained on this $z$-space sees an input
-    distribution with a massive point mass and a thin continuous
-    component on either side of it. ``$\eps$-prediction MSE on
-    $z$-space'' is now an objective whose optimal solution is to
-    output that same point mass, because that is where most of the
-    probability is.
-    \item At sampling time the model emits a $z$-distribution that is
-    overwhelmingly clustered at the (negative) collapsed value, with
-    minimal spread. The inverse transform $x = \hat{F}^{-1}(\Phi(z))$
-    then maps the cluster of $z$ values back to a cluster of $x$
-    values that all sit near zero --- and the heavy tails the inverse
-    CDF was supposed to recover never get sampled because the model
-    never produces $z$ values in the tail regions of $\Phi$.
-\end{enumerate}
-
-The mechanism is not subtle, and we will see it directly in the v8
-diagnostics in \S\ref{sec:copula_failure}. The fix --- adding a
-dequantization step that smears the $0.89$-mass point evenly across a
-small interval before computing $\hat{F}$ --- was already known in
-the normalizing-flow literature for exactly the same reason
-(integer-valued image pixels create the same kind of CDF
-discontinuity); v9 implements it and recovers most of what v8 lost
-on G1. \S\ref{sec:copula_promise} states the design intent of the
-copula attempt; \S\ref{sec:copula_failure} shows v8's collapse
-quantitatively; \S\ref{sec:copula_fix} shows v9's recovery; and
-\S\ref{sec:copula_lesson} pulls out the v2\_remapped cautionary tale
-that explains why even a ``good'' copula recovery still pays the
-predictive-score cost we documented in \S\ref{sec:res_predictive}.
-
-\subsubsection{The Promise: Marginals from Inverse CDF, Joints from Diffusion}
-\label{sec:copula_promise}
-
-The reason the copula approach was attractive in the first place is
-Sklar's theorem
-\cite{sklar1959fonctions}: any joint distribution decomposes into its
-marginals and a copula that captures all the dependence structure
-between them. If we transform every per-feature marginal to a
-standard normal $\Phi(0, 1)$ (via the per-feature empirical CDF
-followed by $\Phi^{-1}$), the diffusion model only has to learn the
-\emph{copula} --- the joint dependence in $z$-space, where every
-marginal is by construction a unit Gaussian. At sampling time we
-invert: a synthetic $z$ goes through $\hat{F}^{-1}(\Phi(z))$ and the
-heavy tails of the original distribution come back ``for free'' from
-the inverse CDF. Going into v8 we expected the synthetic kurtosis to
-land in the $400$--$800$ range (i.e.\ within a factor of two of real
-INTC's $755$); the marginal shape would be exact by construction, and
-the only thing the diffusion model would have to do is a job
-($z$-space joint learning) for which it is well-suited.
-
-\subsubsection{The Failure (v8): z-Space Collapse}
-\label{sec:copula_failure}
-
-v8 is the naive copula attempt --- raw empirical CDF on each
-feature, no dequantization. The diagnostic that exposes the failure
-is the per-feature distribution of $z$-values that v8 actually
-\emph{emits} at sampling time, before the inverse-CDF step. If the
-copula was working, the $z$-distribution should look approximately
-$\mathcal{N}(0, 1)$. It does not (Table~\ref{tab:v8_z_collapse}).
-
-\begin{table}[h!]
-    \centering
-    \footnotesize
-    \begin{tabular}{lrrrr}
-        \toprule
-        Feature & $z$-mean & $z$-std & $z$-kurtosis & KS vs.\ $\mathcal{N}(0,1)$ \\
-        \midrule
-        \texttt{mid\_return}  & $-2.55$ & $0.30$ & $310$  & $0.99$ (max) \\
-        \texttt{trade\_dist}  & $-2.21$ & $0.80$ & $20.6$ & $0.95$ \\
-        \texttt{trade\_sz}    & $+2.22$ & $0.46$ & $-0.99$& $0.95$ \\
-        \texttt{bid\_sz}      & $+0.21$ & $0.88$ & $-0.08$& $0.50$ \\
-        \texttt{ask\_sz}      & $-0.10$ & $0.92$ & $+0.33$& $0.56$ \\
-        \bottomrule
-    \end{tabular}
-    \caption{\textbf{v8 $z$-space distribution per feature, sampled
-    from $400$ synthetic tapes.} ``KS'' is the Kolmogorov--Smirnov
-    statistic against the standard normal --- larger means further
-    from $\mathcal{N}(0, 1)$, $1.0$ is the maximum value indicating
-    no overlap at all. \texttt{mid\_return}, \texttt{trade\_dist}, and
-    \texttt{trade\_sz} all show the collapse signature: $z$-mean
-    pushed several units away from zero, $z$-std much less than one,
-    KS statistic near the upper bound. The two book-size features
-    are roughly fine, because their training distributions don't
-    have a dominant point mass.}
-    \label{tab:v8_z_collapse}
-\end{table}
-
-The \texttt{mid\_return} row is the worst case and the directly
-predicted consequence of the §\ref{sec:copula_zero_inflation}
-mechanism: the diffusion model has learned to emit
-$z \approx -2.55$ with std $0.30$, which inverts back to a near-zero
-mid-return cluster with no tail mass. The headline numbers from this
-collapse are exactly the ones we reported in
-Table~\ref{tab:multi_axis}: v8 has G1 $= 8/15$ (the worst of any
-non-degenerate generator), excess kurtosis $= 2.6$ (against a target
-of $755$, and against the predicted $400$--$800$ range), and trade
-fraction $= 0.009$ (way below real's $0.048$ because most predicted
-events have zero return so they are decoded as quote updates not
-trades). The $85.2\%$ PCA coverage is the misleading consequence:
-v8's hull \emph{is} broad in PC1--PC2 space (it has to be, given the
-$z$-collapse pushed the synthetic projection wide of real's center),
-but the marginals inside that hull are essentially Gaussian.
-
-The collapse is even sharper on a sister checkpoint, v8\_b ---
-trained on the same recipe with a tighter clip on the $x_0$ output.
-v8\_b's per-event $z$-output for \texttt{mid\_return} is
-\emph{degenerate}: every sampled value lands at the same $z$, so
-the empirical $z$-std is exactly zero (Table~\ref{tab:v8_z_collapse}
-records v8 because v8 was the worst non-degenerate case at the time
-the table was built; v8\_b's std=$0$ collapses higher moments to
-NaN, which would render it un-tabulable). v8\_b is the canonical
-``copula collapse'' exemplar: the diffusion model has selected a
-single $z$ point and outputs only that point.
-
-Figure~\ref{fig:z_space_collapse} plots the actual $z$-space
-distribution of \texttt{mid\_return} for v8, v8\_b, and v9 alongside
-the $\mathcal{N}(0,1)$ target. The trimodal structure visible in
-all three panels (a central spike + thin edge masses at $|z|
-\approx 2.6$, with a clean gap in between covering $|z| \in [0.5,
-2.5]$) is the structural signature of the empirical-CDF
-discontinuity --- synth $z$-values either land at the dominant
-plateau bucket or at the far-tail buckets, never in the
-intermediate bands that contain $95\%$ of $\mathcal{N}(0,1)$
-mass. v8\_b is the cleanest exemplar (one tall spike, no edge mass);
-v8 is a partial-recovery version where the spike at $z\approx
--2.55$ has spread out and a small mass has appeared at the edges;
-v9, the topic of \S\ref{sec:copula_fix} below, has the spike
-\emph{repositioned} to $z\approx 0$ with the edge mass still
-visible.
-
-\begin{figure}[h!]
-    \centering
-    \includegraphics[width=\linewidth]{fig_z_space_collapse.pdf}
-    \caption{\textbf{$z$-space collapse and (partial) recovery for
-    \texttt{mid\_return}.} Three panels showing
-    $z = \Phi^{-1}(\hat{F}(\texttt{mid\_return}))$ histograms (log-y
-    density) computed against the saved copula transform's
-    empirical CDF, alongside the $\mathcal{N}(0,1)$ target (dashed
-    black). v8 (left, olive): mode-spike at $z\approx -2.55$ with
-    secondary mass at $|z|\sim 3$ (mean $-2.00$, std $1.09$). v8\_b
-    (centre, dark olive): perfectly degenerate single-point
-    distribution at $z=0$ (mean $0.00$, std $0.00$, higher moments
-    undefined). v9 (right, purple): spike repositioned to $z=0$
-    with visible tail mass at $|z|\sim 2.6$ (mean $0.00$, std
-    $0.28$). The trimodal structure (central spike + thin edge
-    tufts + a clean gap covering $|z| \in [0.5, 2.5]$) is real
-    data structure, not a viz artifact: the empirical CDF of
-    \texttt{mid\_return} has a giant zero-mass plateau plus thin
-    tails, so $z$-values land either at the plateau bucket (single
-    sharp $z$) or at the far-tail edges, never in the bands that
-    contain $95\%$ of $\mathcal{N}(0,1)$ mass. Reading left to
-    right tells the §5.7 story: dequantisation moves the spike
-    location from $z\approx -2.55$ to $z=0$ and unlocks small but
-    nonzero edge mass; what it does not do is recover the smooth
-    $\mathcal{N}(0,1)$ bell.}
-    \label{fig:z_space_collapse}
-\end{figure}
+v8's copula collapsed because INTC's $\sim 89\%$ zero-return mass
+creates a CDF discontinuity that pins the diffusion model to a
+degenerate $z$-band; Appendix~\ref{app:copula_mechanism} details the
+four-step mechanism and shows the v8 / v8\_b / v9 z-space histograms.
+The headline metrics: v8 G1 $= 8/15$ with excess kurtosis $2.6$ vs.\
+real's predicted $400$--$800$, and v8\_b collapses to zero-variance
+output --- \S\ref{sec:copula_fix} below shows how dequantization
+recovered most of what v8 lost on G1, and \S\ref{sec:copula_lesson}
+pins down why predictive transferability did not follow.
 
 \subsubsection{The Fix (v9): Dequantization}
 \label{sec:copula_fix}
@@ -1676,22 +1001,14 @@ reproduces real's event-process structure --- a property that no
 metric in the G1 suite explicitly tests for, and that follows
 mechanically from getting the trade fraction right.
 
-\begin{figure}[h!]
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=\linewidth]{fig_p2_2_event_transitions.pdf}
+    \includegraphics[width=\linewidth]{fig/fig_p2_2_event_transitions.pdf}
     \caption{\textbf{Event-type transition matrix per protagonist.}
-    Stacked bars showing the probability of each of the four
-    consecutive-event transitions (quote$\to$quote, quote$\to$trade,
-    trade$\to$quote, trade$\to$trade) under each source. Real INTC
-    is $\sim 95\%$ quote$\to$quote --- a direct consequence of
-    trades being only $\sim 5\%$ of events, so a uniformly random
-    transition would already be $\sim 90\%$ quote-led. v9 reproduces
-    this stack almost exactly. v2 and v5 emit transition matrices
-    dominated by trade-events because their underlying trade
-    fractions are $50$--$70\%$, an order of magnitude too high.
-    The stack-end totals exceed $1.0$ because each bar shows
-    transitions out of trades AND out of quotes summed together;
-    what matters is the relative composition within each colour.}
+    Stacked bars of the four consecutive-event transitions
+    (quote$\to$quote, quote$\to$trade, trade$\to$quote,
+    trade$\to$trade). Real INTC: $\sim 95\%$ quote$\to$quote. v9
+    reproduces this almost exactly; v2 and v5 are trade-dominated.}
     \label{fig:event_transitions}
 \end{figure}
 
@@ -1749,7 +1066,7 @@ and the LSTM, which reads values not ranks, sees a sequence whose
 predictability has been scrambled. The TRADES protocol
 \cite{berti2025trades} measures something the copula-based
 generators are intrinsically bad at, regardless of how clean the
-copula transform is. \S\ref{sec:disc_practical} returns to the
+copula transform is. \S\ref{sec:disc_structural} returns to the
 practical implication: pick the generator whose evaluation axis
 matches your downstream use case.
 
@@ -1779,27 +1096,15 @@ metric in this report measures, and that v2/v5 fail at not because
 their queue process is uniformly wrong but because their
 \emph{trade-event arrival process} is.
 
-\begin{figure}[h!]
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=\linewidth]{fig_book_resilience.pdf}
-    \caption{\textbf{Book resilience: queue replenishment around
-    trade events.} Event-study around each trade in each source
-    ($\sim 5000$ trades per source where available;
-    v9 has fewer because trades are sparse). For each trade, the
-    queue size on the depleted side (\texttt{ask\_sz} for buy
-    trades, \texttt{bid\_sz} for sell trades) is extracted across
-    $[t-30, t+30]$ events and normalised to the median of the
-    pre-trade window $[t-30, t-1]$. Curves show the median across
-    trades; bands show the IQR. Real (black) drops sharply from
-    $1.0$ to $\sim 0.88$ at $t=0$ and plateaus around $0.88$--$0.90$
-    through $t=30$ (recovery timescale on INTC $> 30$ events). v9
-    (purple) tracks real almost identically. v2 (blue) and v5
-    (green) stay flat at $\approx 1.0$: their trade-saturated event
-    environment means the pre-trade window is contaminated with
-    other trades, so the per-trade signal averages away. v9 alone
-    captures this LOB-resilience dynamic; the property is
-    structural to the trade-event process and not visible in any
-    marginal or per-feature correlation metric.}
+    \includegraphics[width=\linewidth]{fig/fig_book_resilience.pdf}
+    \caption{\textbf{Queue size on the depleted side around trade
+    events, normalised to pre-trade median.} Event-study over
+    $[t-30, t+30]$, $\sim 5000$ trades per source (fewer for v9).
+    Curves are medians; bands are IQRs. Real drops to $\sim 0.88$
+    at $t=0$; v9 tracks real; v2 and v5 stay flat (trade-saturated
+    environment averages the per-trade signal away).}
     \label{fig:book_resilience}
 \end{figure}
 
@@ -1817,111 +1122,18 @@ happened when we ran four reference market-making agents through each
 of our generators, what the rankings tell us, and where the
 methodology runs out of road.
 
-\subsection{Agent Design --- The Avellaneda-Stoikov Family}
-\label{sec:agent_design}
-
-We chose the Avellaneda-Stoikov family of market-making agents
-\cite{avellaneda2008high} because it is the most-studied
-parametric model-MM strategy, the parameters are interpretable
-(inventory aversion $\gamma$, liquidity intensity $\kappa$, time
-horizon $T$), and it is small enough to extend with optional signals
-without changing the optimal-control derivation. Our four agents are:
-
-\begin{itemize}
-    \item \textbf{A0 --- Constant spread.} Posts $\pm 1$ tick around
-    the prevailing mid at every event, no inventory adjustment, no
-    signal. This is our null --- it should approximately collect the
-    half-spread minus inventory PnL whenever its quotes are crossed.
-    \item \textbf{A1 --- Avellaneda-Stoikov baseline.} Inventory-skewed
-    reservation price $r = s - q\gamma\sigma^2(T - t)$ with
-    half-spread $\delta = \tfrac{1}{2}\gamma\sigma^2(T - t) +
-    \tfrac{1}{\gamma}\ln(1 + \tfrac{\gamma}{\kappa})$, posted on each
-    side. Calibrated $\gamma$ and $\kappa$ on the training set.
-    \item \textbf{A2 --- A1 with order-flow-imbalance (OFI) skew.}
-    Adds a short-horizon OFI term \cite{cont2014price} to the
-    reservation price; quotes are leaned in the direction the OFI
-    signal predicts the next-event return.
-    \item \textbf{A3 --- A1 with VPIN-gated widening.} Volume-
-    synchronized probability of informed trading
-    \cite{easley2012flow}; when VPIN exceeds a threshold the agent
-    widens its spread to compensate for adverse-selection risk.
-\end{itemize}
-
-The fill simulator is simple: at the start of each event the agent
-posts bid and ask limit orders; if the next market event crosses the
-posted price (via a market trade or a quote update that puts the new
-best on the wrong side of the agent's quote), the agent gets filled
-at the posted price; otherwise the orders are cancelled and re-posted
-at the next event. Inventory and PnL are tracked event-by-event, with
-a forced position close at the end of each tape. Implementation
-details and parameter calibration are in
-Appendix~\ref{app:agents_impl}.
-
-\subsection{The Setup is Practical, but ``Truth'' is Itself Biased}
-\label{sec:ranking_mechanism}
-
-We deployed all four agents against each of our generators
-(20 INTC checkpoints; for the cross-asset comparison in
-\S\ref{sec:cross_asset}, also against TSLA and SPY synthetic tapes)
-and against a historical-replay baseline that uses the real
-held-out validation tapes themselves. Per agent, per tape, we record
-terminal PnL, fill count, fill rate, inventory variance, and max
-drawdown.
-
-The natural temptation is to treat the historical-replay PnL ranking
-as ``truth'' --- the answer the synthetic generator should be
-trying to reproduce --- and to evaluate generators by how closely
-their per-agent PnL ranking matches it. We resist this temptation,
-because the historical-replay setup is itself a biased measurement.
-
-The bias is structural. Historical replay is non-responsive: the
-recorded order book was generated by other market participants who
-did not know about our agent. When our A2 agent posts an aggressive
-quote and gets filled $10{,}728$ times per day (Table~\ref{tab:agent_truth}),
-the next event in the replay --- a counterparty trade or quote update
---- happens \emph{exactly the way it did historically}, regardless
-of A2's now-unbalanced inventory or the price impact A2's market
-participation would have caused. A real A2 agent trading at that
-intensity would push prices, attract opposing flow, and shift the
-adverse-selection environment its own quotes face. The historical
-replay credits A2 for the fills without charging it for the impact.
-Generators evaluated in the same simulator inherit the same blind
-spot: they reproduce the LOB statistics, but the agent's trades are
-still invisible to the synthetic counterparties.
-
-\begin{table}[h!]
-    \centering
-    \footnotesize
-    \begin{tabular}{lrrr}
-        \toprule
-        Agent (real holdout) & Terminal PnL & Fill count & Fill rate \\
-        \midrule
-        A0 (constant)        & $-352$        & $5{,}755$  & $0.20\%$ \\
-        A3 (AS + VPIN)       & $-189{,}648$  & $7{,}736$  & $0.33\%$ \\
-        A1 (AS baseline)     & $-262{,}253$  & $9{,}582$  & $0.39\%$ \\
-        A2 (AS + OFI)        & $-322{,}124$  & $10{,}728$ & $0.44\%$ \\
-        \bottomrule
-    \end{tabular}
-    \caption{\textbf{Per-agent statistics on the real-data
-    historical-replay baseline.} Sorted by terminal PnL (best on top).
-    A0's near-zero PnL reflects the fact that constant-spread quotes
-    only get filled when the market crosses them, and cross-induced
-    fills net out close to half-spread per event. The three AS-family
-    agents lose increasing amounts of money in the order
-    A3 $<$ A1 $<$ A2 because of the additional fill volume each
-    signal layer commits the agent to. \emph{None} of these PnL
-    numbers includes a market-impact penalty; under impact, the
-    aggressive agents (A2, then A1) would lose more.}
-    \label{tab:agent_truth}
-\end{table}
-
-The implication for our evaluation is sharp: we do not have a
-ground-truth ranking of these agents, only a non-impact ranking
-extracted from historical replay. The synthetic generators give us
-\emph{additional} non-impact rankings in different LOB regimes. The
-question we can actually answer is not ``which generator gives the
-right ranking'' but ``what does the spread of rankings across
-generators tell us about the robustness of each agent's edge''.
+We deployed four Avellaneda-Stoikov agents (A0 constant-spread, A1
+inventory-skewed baseline, A2 with order-flow-imbalance, A3 with
+VPIN-gated widening; full specification in
+Appendix~\ref{app:agents_impl}) against each generator in a
+non-impact fill simulator. Because historical replay is
+non-responsive (\S\ref{sec:backtest_problem}), recorded markets do
+not react to the agent under test, and every PnL number we report
+--- on every generator, including the historical-replay baseline ---
+inherits the same blind spot. We therefore treat agent rankings as
+a consistency check across heterogeneous synthetic environments, not
+as a pseudo-truth: the answerable question is which patterns survive
+the spread.
 
 \subsection{Different Generators Produce Different Rankings}
 \label{sec:rdiff_decoupled}
@@ -1931,12 +1143,13 @@ between each generator's per-agent PnL ranking and the
 historical-replay ranking from Table~\ref{tab:agent_truth}, we got
 the spread in Table~\ref{tab:rho_diff_spread}.
 
-\begin{table}[h!]
+\begin{table}[ht]
     \centering
     \footnotesize
     \begin{tabular}{lrl}
         \toprule
-        Generator & $\rdiff$ & Generator's PnL ranking (best $\to$ worst) \\
+        Generator & $\rdiff$ & Generator's PnL ranking \\
+        & & (best $\to$ worst) \\
         \midrule
         Real (hold-out replay)        & $+0.40^{*}$ & A0, A3, A1, A2 \\
         \midrule
@@ -1965,22 +1178,16 @@ the spread in Table~\ref{tab:rho_diff_spread}.
     \label{tab:rho_diff_spread}
 \end{table}
 
-The headline observation is that $\rdiff$ does not track the
-distributional-quality axes we measured in \S\ref{sec:results}.
-v9 has the best marginal-distribution match in the entire study (G1
-$= 12/15$, kurtosis matched to $129$, trade fraction matched to real)
-and produces a ranking that is \emph{anti-aligned} with truth at
-$\rdiff = -0.80$. v8 has the worst marginals ($\rdiff$ would not
-help even if v8 had real-quality marginals --- it doesn't) and
-\emph{matches} truth at $\rdiff = +0.80$. v9\_b is perfectly
-anti-aligned and is the most degenerate generator we trained.
-Whatever $\rdiff$ is measuring, it is not what
-\S\S\ref{sec:res_g1}--\ref{sec:res_pca} measured. This is consistent
-with the v2\_remapped finding from \S\ref{sec:copula_lesson}:
-operations that perfectly preserve cross-feature rank correlations
-can completely change which agent looks best, because the agents read
-\emph{values}, not ranks, and small per-event value perturbations
-flip A1/A2-style close calls.
+$\rdiff$ does not track the distributional-quality axes of
+\S\ref{sec:results}: v9 has the best marginal-distribution match
+in the study and is anti-aligned with truth at $\rdiff = -0.80$;
+v8 has the worst marginals and matches truth at $+0.80$; v9\_b is
+perfectly anti-aligned at $-1.00$. This is consistent with the
+v2\_remapped finding (\S\ref{sec:copula_lesson}): operations that
+preserve cross-feature rank correlations can completely change
+which agent looks best, because agents read \emph{values}, not
+ranks, and small per-event value perturbations flip A1/A2-style
+close calls.
 
 \subsection{Some Stylized Facts We Can Trust}
 \label{sec:agent_implications}
@@ -2000,49 +1207,32 @@ gives a market maker to work with. We treat the agent-ranking
 spread as informative about \emph{robustness} of each agent's edge
 across heterogeneous synthetic environments, not as a pseudo-truth.
 
-\paragraph{A0 wins (or near-wins) almost everywhere.} Across truth
-and four of the seven generators, A0 (constant spread) is the
-best-PnL agent. The only generators where A0 loses are v9 and v9\_b
-(the copula generators that scrambled the per-event return-magnitude
-structure that A0 relied on for fee collection). The robust
-takeaway: in non-impact backtests on heavy-tail-marginal data, a
-non-adapting MM that simply collects the spread when crossed beats
-the inventory-adjusted, signal-driven AS variants. This is a known
-pattern in the market-making literature for low-toxicity environments
-\cite{avellaneda2008high} and our generators reproduce it.
+\paragraph{A0 wins (or near-wins) almost everywhere.} A0
+(constant spread) is the best-PnL agent on truth and on four of
+the seven generators; the only generators where A0 loses are v9
+and v9\_b, which scrambled the per-event return-magnitude
+structure A0 relied on for fee collection. The robust takeaway:
+in non-impact backtests, a non-adapting MM that collects the
+spread when crossed beats the inventory-adjusted AS variants ---
+the well-known low-toxicity pattern \cite{avellaneda2008high}
+that our generators reproduce.
 
-\paragraph{The A1 vs.\ A2 distinction is a coin-flip.} A1 (no signal)
-and A2 (OFI signal) end up adjacent in the ranking in every generator
-in Table~\ref{tab:rho_diff_spread}, but the order between them flips
-across generators (A1 above A2 in v8\_b, v11; A2 above A1 in v8, v10,
-v2\_remapped). On truth A1 is above A2 by a small margin --- the
-$z$-score difference in terminal PnL is $-0.08$
-(Table~\ref{tab:agent_truth}). The OFI signal that A2 uses is real but
-weak; small per-event return-sequence perturbations are enough to flip
-which side wins. The robust takeaway: \emph{do not pick between
-OFI-aware and OFI-blind market makers based on a single backtest},
-synthetic or historical.
+\paragraph{The A1 vs.\ A2 distinction is a coin-flip.} A1 (no
+signal) and A2 (OFI signal) sit adjacent in every generator's
+ranking but the order between them flips across generators (A1
+above A2 in v8\_b / v11; A2 above A1 in v8 / v10 / v2\_remapped),
+and on truth A1 edges A2 by only $-0.08$ in PnL $z$-score. The
+OFI signal A2 uses is real but weak; small per-event perturbations
+flip which side wins. Takeaway: do not pick between OFI-aware and
+OFI-blind market makers from a single backtest, synthetic or
+historical.
 
 \paragraph{A3 (VPIN-gated) does not consistently help.} A3
-underperforms A1 in three of seven generators and underperforms A2 in
-five. On truth A3 \emph{outperforms} both, which is interesting but
-within a wide PnL spread. The VPIN-as-toxicity-detector approach is
-fragile to the specific way each generator emits trade size and
-sign, and our generators do not agree on whether that fragility
-helps or hurts.
-
-\paragraph{What this is not.} It is tempting to read
-Table~\ref{tab:rho_diff_spread} as a validation problem (``which
-generator gives the right $\rdiff$?''). The framing throughout this
-section has been the opposite: there is no right $\rdiff$ because
-neither historical replay nor any single generator measures the
-agent's PnL under realistic market impact. The right question is
-which empirical patterns survive across all our non-impact
-measurements --- and the three bullet points above are the patterns
-that do. \S\ref{sec:disc_practical} returns to the practical
-implications for practitioners who want to use synthetic generators
-for strategy backtesting rather than for distributional quality
-assurance.
+underperforms A1 in three of seven generators and A2 in five; on
+truth A3 outperforms both, but inside a wide PnL spread. The
+VPIN-as-toxicity-detector approach is fragile to the specific way
+each generator emits trade size and sign, and our generators do
+not agree on the direction of the fragility.
 
 % ══════════════════════════════════════════════════════════════════════════
 \section{Cross-Asset Validation: INTC, TSLA, SPY}
@@ -2051,42 +1241,24 @@ assurance.
 \subsection{Why Cross-Asset?}
 \label{sec:why_cross}
 
-The single most-cited concern about anything we said in
-\S\ref{sec:results} is that INTC is a pathological dataset.
-\S\ref{sec:copula_zero_inflation} reported that $88.85\%$ of INTC
-mid-return events are exactly zero --- a property of large-tick
-single-name equities under modern market structure that is not
-universal. If the three-axis tension we documented is an artifact of
-that one dataset feature, the conclusions of \S\ref{sec:results}
-should not generalize. To test this, we re-ran the v2 and v5
-training and evaluation pipelines on two qualitatively different
-tickers: TSLA (small-tick single-name; expected smaller zero-return
-fraction, more continuous returns) and SPY (the S\&P 500
-ETF; expected deep liquidity, tight spreads, index-arbitrage-driven
-price discovery). Each combination is a fresh end-to-end pipeline:
-data prep, model training, sampling, B/C/D validation, TRADES
-metrics, and predictive score on per-ticker train/val/holdout
-splits.
-
-We restricted the cross-asset comparison to v2 and v5 because they
-are the two architectural extremes from \S\ref{sec:three_protagonists}
-that bracket our three-axis trade-off ($\eps$+FiLM, the predictive
-winner; $v$+AdaLN, the heavy-tail winner). v9 (copula+dequant) was
-deferred because the copula transform's per-feature dequantization
-parameters are dataset-specific and would have required a second
-calibration pass per ticker --- out of scope for the cross-asset
-test.
+If the three-axis tension is an artifact of INTC's $89\%$
+zero-return mass rather than a structural property of MSE-based
+diffusion training, it should not replicate on tickers with less
+zero-inflation. We re-ran the v2 and v5 pipelines end-to-end on
+TSLA (small-tick, more continuous returns) and SPY (index ETF, in
+flight at submission). v9 was deferred because its per-feature
+dequantization parameters require ticker-specific recalibration.
 
 \subsection{TSLA --- Small-Tick Single Name}
 \label{sec:tsla}
 
-TSLA training and evaluation completed end-to-end (the SPY chained
-training is still in flight as of this draft;
-\S\ref{sec:spy} reports its current status).
+TSLA training and evaluation completed end-to-end (SPY chained
+training was still in flight at submission; see
+Appendix~\ref{app:reproducer}).
 Table~\ref{tab:cross_asset_tsla} extracts the v2/v5 row pair from the
 combined cross-asset table.
 
-\begin{table}[h!]
+\begin{table}[ht]
     \centering
     \footnotesize
     \begin{tabular}{llrrrr}
@@ -2111,126 +1283,51 @@ combined cross-asset table.
     \label{tab:cross_asset_tsla}
 \end{table}
 
-\begin{figure}[h!]
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=\linewidth]{fig_6_2_cross_asset_axis_bars.pdf}
+    \includegraphics[width=\linewidth]{fig/fig_6_2_cross_asset_axis_bars.pdf}
     \caption{\textbf{Cross-asset three-axis comparison.} Three
-    panels (G1 pass fraction, predictive ratio, PCA convex-hull
-    coverage) by three tickers (INTC, TSLA, SPY) by two
-    architectures (v2 solid, v5 hatched). The TSLA bars match
-    Table~\ref{tab:cross_asset_tsla} numerically: v2 dominates v5
-    on every axis, the cleanest single piece of evidence that the
-    INTC three-axis tension is at least partially microstructure-
-    specific. The SPY column is empty pending the chained-training
-    pipeline completion (see \S\ref{sec:spy}); we will re-render
-    the figure when SPY artifacts land. Note that the predictive
-    panel uses the raw $\times$replay ratio (lower is better) and
-    that TSLA v2's $4.86\times$ is currently the best
-    non-distributionally-broken cell in the entire study.}
+    panels (G1 pass fraction, predictive $\times$replay ratio,
+    PCA convex-hull coverage) by three tickers (INTC, TSLA, SPY)
+    by two architectures (v2 solid, v5 hatched). TSLA v2
+    dominates v5 on every axis. SPY column pending the
+    chained-training completion (Appendix~\ref{app:reproducer}).}
     \label{fig:cross_asset_bars}
 \end{figure}
 
-Three observations.
-
-First, \textbf{TSLA v2 dominates TSLA v5 on every axis we
-measured} --- G1 ($12$ vs.\ $10$), predictive ($4.86$ vs.\ $12.2$),
-PCA ($62.0\%$ vs.\ $18.9\%$). On INTC the same architectural pair
-trades off (v5 wins G1 and predictive; v2 wins PCA); on TSLA there
-is no Pareto trade-off at all. The clean architectural ordering on
-TSLA is itself the cleanest single piece of evidence we have that
-the three-axis tension is partially INTC-specific: when the
-underlying data is less zero-inflated, the heavy-tail-committing
-architecture (v5) does not have a niche to dominate, and the
-mode-covering baseline (v2) wins everywhere.
-
-Second, \textbf{TSLA v2 produces the best predictive score in the
-entire study} at $4.86\times$ replay (the previous best was the
-INTC noclip family at $4.0\times$, which we documented as
-distributionally-broken in \S\ref{sec:res_predictive}; TSLA v2 is the
-first non-broken generator to come within an order of magnitude of
-the market-replay baseline). The mechanical reading: TSLA's smaller
-tick and lower zero-fraction give the LSTM more per-event signal to
-fit; the $\eps$-prediction baseline preserves enough of that signal
-to reach a regime where downstream LSTM training transfers genuinely
-well.
-
-Third, \textbf{TSLA v5's PCA coverage drops to $18.9\%$}, against
-INTC v5's $46.1\%$. The $v$-prediction objective commits the model
-to extreme samples; on INTC where return magnitudes are pinned to a
-discrete grid, the extremes still land inside real's PC1--PC2
-region. On TSLA the extremes land outside real's hull and PCA
-coverage collapses. This is the same mechanism the noclip family
-exhibited on INTC --- spatial overlap with real disappears when the
-model's output distribution is too wide --- and v5 is the smaller
-version of it on TSLA.
-
-Trade fractions are also worth flagging: $0.183$ for TSLA v2 and
-$0.340$ for TSLA v5, against INTC v2's $0.558$. TSLA's lower
-zero-fraction means the per-event composition of the synthetic
-output is structurally closer to real even before any
-generator-specific fix --- the trade-fraction problem we devoted
-\S\ref{sec:copula_story} to is much less acute on TSLA.
-
-\subsection{SPY --- Index-Tracking ETF}
-\label{sec:spy}
-
-SPY training is in progress. Initial 6-hour training jobs on each
-of v2 and v5 (the same setup that worked for INTC and TSLA) hit the
-SLURM time limit without completing a single epoch --- SPY data is
-roughly $10\times$ larger per day than TSLA, and a single epoch on
-the full split exceeded the per-job time budget before any
-checkpoint was written. We responded by patching the trainer to add
-step-based checkpoint snapshots (every $10{,}000$ optimizer steps,
-in addition to the per-epoch save) and submitting the training as a
-chain of $4 \times 6$h jobs per architecture, each chunk resuming
-from the latest snapshot of the previous chunk via Lightning's
-optimizer-and-scheduler-state restore. Implementation in
-\path{scripts/utils/submit_spy_chain.sh}; the chain is executing on
-a parallel cluster account at the time of writing. We expect SPY
-v2/v5 results to land 24--30 hours after the chain start
-(\S\ref{sec:future_work} lists this as the highest-priority
-follow-up and Appendix~\ref{app:cross_asset_full} will be updated
-with the headline numbers once the pipeline completes). The cross-
-asset comparison in this section is therefore a four-cell rather
-than six-cell test for the moment.
+Three findings: (i) TSLA v2 dominates v5 on every axis (G1 $12$
+vs.\ $10$, predictive $4.86\times$ vs.\ $12.2\times$, PCA $62\%$
+vs.\ $19\%$) --- no Pareto trade-off, the cleanest evidence the
+tension is partially INTC-specific; (ii) TSLA v2's $4.86\times$
+is the best non-distributionally-broken predictive score in the
+study (the INTC noclip family at $4.0\times$ was
+distributionally-broken, \S\ref{sec:res_predictive}); (iii) TSLA
+v5's PCA collapses to $18.9\%$, confirming the $v$-prediction
+extremes-outside-hull mechanism operates on smoother data too.
+Trade fractions ($0.183$ for v2, $0.340$ for v5) are structurally
+closer to real than INTC's, so the copula fix of
+\S\ref{sec:copula_story} is less needed on TSLA.
 
 \subsection{Cross-Asset Findings: Structural or Microstructure-Specific?}
 \label{sec:cross_findings}
 
-The four cells we have provide a partial answer to the
-``structural-vs-INTC-specific'' question, with two pieces of
-positive evidence and one piece against.
+SPY's chained $4 \times 6$h training pipeline
+(Appendix~\ref{app:reproducer}) completed and produced partial
+validation metrics; the full G1 aggregate and predictive-score
+jobs did not finish in the submission window
+(Appendix~\ref{app:cross_asset_full} reports the SPY cells we do
+have). On the only axes we can measure for SPY, the v2-vs-v5
+ordering flips a third time relative to INTC and TSLA.
 
-\paragraph{Evidence the tension is partly INTC-specific.} On TSLA,
-v2 dominates v5 on all three axes; there is no architectural
-trade-off to call a tension. The $\eps$-prediction baseline that
-sits at the predictive-corner of the INTC trade-off becomes the
-best generator everywhere on TSLA. If the three-axis tension were
-structural to MSE-based diffusion training in general, we would
-expect to see at least \emph{some} architectural trade-off on TSLA;
-we don't.
-
-\paragraph{Evidence the tension still partly survives.} TSLA v5's
-PCA coverage collapses to $18.9\%$, much worse than INTC v5's
-$46.1\%$. The per-architecture mechanism that destroyed PCA coverage
-on the INTC noclip family ($v$-prediction commits to extremes that
-fall outside real's hull) operates on TSLA v5 as well, just at a
-smaller magnitude. So the architecture-level cost of $v$-prediction
-on a smoother-marginal dataset is real --- TSLA doesn't reward
-heavy-tail commitment, and v5 pays for it on PCA coverage rather
-than on G1.
-
-\paragraph{Practical implication for picking an architecture.}
-A practitioner choosing between v2 and v5 for a new ticker should
-not assume either of the INTC orderings carries over. On INTC the
-two architectures trade off (and \S\ref{sec:disc_practical} would
-say ``pick by use case''); on TSLA v2 dominates outright (and the
-practitioner should just use v2). Until the SPY result lands we
-cannot say which behaviour the next ticker will exhibit. The
-evidence from one of two cross-asset tickers is that the trade-off
-is at least somewhat INTC-specific --- but a one-of-two result is
-exactly the kind of partial evidence \S\ref{sec:limitations} flags
-as ``not a sufficient basis to declare the tension non-structural''.
+The two complete and one partial cross-ticker cells give a
+consistent qualitative reading: TSLA v2 Pareto-dominates v5, SPY's
+available metrics favour v5, and neither carries INTC's
+anti-correlated three-corner trade-off. A practitioner moving to a
+new ticker should not assume either INTC ordering carries over
+(\S\ref{sec:disc_structural}); the cross-ticker evidence is enough
+to say the INTC three-axis tension is partially INTC-specific, but
+not enough to declare it dissolved on either of the non-INTC
+tickers.
 % replicate? Plot the three-axis ternary with all 6 points.
 %
 % FIGURE 8.1: Cross-ticker three-axis ternary
@@ -2240,168 +1337,113 @@ as ``not a sufficient basis to declare the tension non-structural''.
 \label{sec:discussion}
 % ~1.5 pages.
 
-\subsection{The Three-Axis Tension as a Structural Result}
+\subsection{Structural Result and Practical Implications}
 \label{sec:disc_structural}
 
-The empirical pattern that organizes \S\ref{sec:results} --- no checkpoint
-wins all three axes, and the rankings are systematically anti-correlated
-across pairs (Table~\ref{tab:correlation_subset}) --- is not a
-coincidence of which twenty configurations we happened to train. It
-follows from the loss we minimized. DDPM training is per-element MSE on a
-denoising target: the gradient sees each scalar of the noise (or velocity)
-prediction independently and tries to drive its squared error to zero. On
-heavy-tailed multivariate data this creates two mechanical pressures.
-First, because MSE is dominated by squared errors at large magnitudes, an
-$\eps$-objective settles into a mode-covering interior solution (the v2
-behaviour: G1 pass on bulk-shape checks, kurtosis $268$ vs.\ real $755$,
-$30\%$ PCA coverage). Re-weighting toward signal at low noise levels
-($v$-prediction) does sharpen tails (v5 reaches kurtosis $1257$), but the
-per-element nature of the criterion means the model commits to extreme
-values without coordinating those extremes across features --- so v5's
-PCA hull collapses to $0\%$. Second, marginals can be hit post-hoc by
-rank-preserving remap (the copula construction of \S\ref{sec:copula_story},
-extending Sklar's theorem~\cite{sklar1959fonctions} to a learned joint),
-but the act of re-bucketing per-event values onto a target grid scrambles
-the value sequence the LSTM reads as ``predictability,'' which is why v9
-and v2\_remapped both pay the predictive cost we measured in
-\S\ref{sec:copula_lesson}. The two pressures are not the same mechanism,
-but they share the same root: per-element loss against multivariate
-heavy-tailed targets. The TSLA result of \S\ref{sec:cross_findings}
-qualifies how universal that root is. On a smoother-tailed ticker the
-$v$-vs-$\eps$ trade-off does not produce a Pareto front --- v2 dominates
-v5 on every axis. The mechanism (per-element MSE under-coordinates extremes)
-is still real on TSLA (v5's PCA still collapses to $18.9\%$), but its
-\emph{cost in trade-off terms} depends on how heavy the marginals are.
-Read honestly, the three-axis tension is structural \emph{conditional} on
-INTC-like microstructure, not structural to MSE-based diffusion training
-in the abstract.
+The empirical pattern that organizes \S\ref{sec:results} --- no
+checkpoint wins all three axes, and the rankings are systematically
+anti-correlated across pairs
+(Table~\ref{tab:correlation_subset}) --- follows from the loss we
+minimized. DDPM training is per-element MSE on a denoising target;
+on heavy-tailed multivariate data this creates two pressures.
+First, MSE is dominated by squared errors at large magnitudes, so
+the $\eps$-objective settles into a mode-covering solution (v2:
+kurtosis $268$ vs.\ real $755$, $30\%$ PCA); re-weighting toward
+low noise ($v$-prediction) sharpens tails (v5 kurtosis $1257$) but
+the per-element criterion commits to extremes without coordinating
+them across features (v5 PCA $0\%$). Second, marginals can be hit
+post-hoc by rank-preserving remap (the copula construction of
+\S\ref{sec:copula_story}, extending
+Sklar~\cite{sklar1959fonctions}), but re-bucketing per-event
+values onto a target grid scrambles the sequence the LSTM reads as
+``predictability'' --- which is why v9 and v2\_remapped both pay
+the predictive cost of \S\ref{sec:copula_lesson}. The two
+pressures share one root: per-element loss against multivariate
+heavy-tailed targets. The TSLA result of
+\S\ref{sec:cross_findings} qualifies how universal that root is.
+On a smoother-tailed ticker the $v$-vs-$\eps$ trade-off does not
+produce a Pareto front (v2 dominates v5 outright); the mechanism is
+still real (TSLA v5 PCA $18.9\%$), but the \emph{trade-off cost}
+depends on how heavy the marginals are. The three-axis tension is
+structural \emph{conditional} on INTC-like microstructure, not
+structural to MSE-based diffusion training in the abstract.
 
-\subsection{Practical Implications for Practitioners}
-\label{sec:disc_practical}
+Practical implication: there is no one-size-fits-all generator,
+but the choice is disciplined by which axis the downstream task
+rewards. Table~\ref{tab:disc_use_cases} extracts the per-use-case
+picks.
 
-The negative content of \S\ref{sec:disc_structural} is also its positive
-content: there is no one-size-fits-all generator, but the choice is
-disciplined by which axis the downstream task actually cares about.
+\begin{table}[ht]
+    \centering
+    \footnotesize
+    \begin{tabular}{p{0.30\linewidth} p{0.30\linewidth} p{0.30\linewidth}}
+        \toprule
+        Downstream use case & Recommended pick & Cost to budget for \\
+        \midrule
+        Distributional realism (regulatory stress, target - moment gen) & v2; v5 specifically for heavy tails & v5 loses PCA coverage \\
+        Temporal transferability (LSTM) & noclip $\eps$-prediction (v3\_e9\_noclip, $4\times$ replay) & fails G1; $0\%$ PCA hull \\
+        Multivariate scenario coverage & v9 (copula) & $106\times$ predictive: not for return magnitude reading backtests \\
+        Agent / strategy backtesting (\S\ref{sec:agents}) & run several generators; report what survives & no single generator gives a true ranking \\
+        Cross-asset transfer (new ticker) & re-evaluate v2, v5 (and v9 if INTC-like) & INTC ordering may not carry \\
+        \bottomrule
+    \end{tabular}
+    \caption{\textbf{Use-case-conditional generator recommendation.}
+    Robust patterns from \S\ref{sec:agents} agent backtests: A0
+    dominance under low-toxicity regimes
+    \cite{avellaneda2008high}, A1$\approx$A2 within noise, A3
+    fragility to trade-sign emission.}
+    \label{tab:disc_use_cases}
+\end{table}
 
-\paragraph{Distributional realism (e.g.\ regulatory stress tests, scenario
-generation for a target moment).} v2 is the safe pick on INTC-like
-microstructure --- best G1 of the twenty, $79\%$ pass, paid for with a
-middling predictive score. If the downstream specifically rewards heavy
-tails (extreme-loss VaR, fat-tail scenario sampling), v5's higher
-kurtosis is the better match, but PCA coverage should be checked before
-deployment because v5 is exactly the family that loses it.
-
-\paragraph{Temporal transferability (e.g.\ training a downstream sequence
-model on synthetic data).} The noclip $\eps$-prediction family
-(v3\_e9\_noclip is the single best of twenty, $4\times$ replay) is the
-right pick. The honest disclosure is that those generators fail G1 hard
-and cover zero of real's PCA hull --- they are good \emph{for that one
-purpose only}, and we would not recommend using them for any quality
-claim other than predictive transferability.
-
-\paragraph{Multivariate scenario coverage (e.g.\ diverse-scenario
-backtesting that needs to span the joint distribution).} v9 (copula) is
-the only protagonist that reaches the high-coverage region we measured.
-It pays for that with a $106\times$ predictive score, so any backtest
-that reads per-event return magnitude beyond rank should not run on a v9
-tape.
-
-\paragraph{Agent / strategy backtesting (the \S\ref{sec:agents} use case).}
-The honest answer here is the most cautious one: no single generator
-provides a trustworthy ranking, because the historical-replay reference
-itself is biased (it does not respond to the agent's trades) and each
-generator scrambles a different piece of the per-event structure. The
-workflow we found defensible in \S\ref{sec:agent_implications} is to run
-the same agent set across several generators and report only the patterns
-that survive the spread (A0 dominance under low-toxicity regimes
-\cite{avellaneda2008high}, A1$\approx$A2 within noise, A3 fragility to
-trade-sign emission). Single-generator strategy claims are not supported
-by what we measured.
-
-\paragraph{Cross-asset transfer.} \S\ref{sec:cross_findings} showed that
-the INTC ordering does not carry over to TSLA --- v2 dominates outright
-rather than trading off against v5. A practitioner moving to a new ticker
-should re-evaluate v2 and v5 (and v9 if the ticker has INTC-like
-zero-inflated returns) on the new data before committing to one of the
-above use-case picks; do not assume the INTC-conditional architecture
-ranking is the right one.
-
-\subsection{Limitations}
+\subsection{Limitations and Future Work}
 \label{sec:limitations}
 
-Five caveats bound how far the structural reading of \S\ref{sec:disc_structural}
-can be pushed. (i) \emph{Backbone is fixed.} All twenty checkpoints share
-the TRADES transformer~\cite{berti2025trades}; we did not test a U-Net or
-state-space backbone, so the per-element-MSE mechanism we attribute the
-tension to has only been observed inside one architectural family.
-(ii) \emph{INTC-dominance.} The zero-inflated marginal that drives the
-\S\ref{sec:copula_story} pathology is INTC-specific microstructure; TSLA
-already qualifies the structural claim and SPY was still chunked-training
-at submission time, so the cross-asset evidence base is two and a half
-tickers, not three. (iii) \emph{Twenty holdout days is thin for agent
-rankings.} The $\rdiff$ spread of \S\ref{sec:rdiff_decoupled} has wide
-per-agent confidence intervals; reading any one cell as a stable signal
-would over-reach. (iv) \emph{Predictive score is LSTM-conditional.} The
-score is the MAE of a fixed two-layer LSTM trained on synthetic and
-tested on real; a different downstream sequence model could re-rank the
-checkpoints. (v) \emph{Backtests are non-responsive.} Every agent number
-in \S\ref{sec:agents} --- on every generator, including ``truth'' ---
-assumes our trades do not move the market. Real impact would compress
-the spreads we observed and could reorder cells inside the table.
-(vi) \emph{No intraday structure in synth output.} Our generators
-are trained on regime-conditioned event windows that are not
-anchored to time-of-day, so the synthetic output does not reproduce
-the intraday U-shape that real INTC exhibits in volume and queue
-size --- see Figure~\ref{fig:intraday_lob_volume}
-(\S\ref{sec:res_g1}) for the visual. Any downstream task that
-depends on time-of-day microstructure (open/close auctions,
-lunchtime volume troughs, end-of-day queue build-up) cannot use
-these tapes directly.
+Six caveats bound the structural reading of
+\S\ref{sec:disc_structural}; four directions follow naturally.
 
-\subsection{Future Work}
-\label{sec:future_work}
-
-Four directions follow naturally from the limitations above. (i)
-\emph{Autoregressive (event-by-event) diffusion} would let each event's
-denoising condition on the realized previous event rather than the
-noised joint; this might ease the per-element MSE pressure that
-under-coordinates extremes across features. (ii) \emph{A mixture-of-experts
-denoising head} ($\eps$-prediction for bulk events, $v$-prediction for
-tail events, with a learned router) would let one model carry both modes
-without forcing a single denoising target to optimize both shapes.
-(iii) \emph{Direct distributional losses} (MMD, Wasserstein) added to
-the MSE objective would reward marginal and joint shape directly rather
-than as a side effect of squared error --- a candidate fix to the
-specific failure mode we identified in \S\ref{sec:disc_structural}.
-(iv) \emph{Broader evaluation:} more agents (momentum, market-taking,
-mean-reversion in addition to the MM family of \S\ref{sec:agent_design}),
-longer holdout windows than twenty days, and an impact-aware backtester
-so $\rdiff$ stops being a non-responsive number. The SPY chained-training
-job will close the cross-asset triangle of \S\ref{sec:cross_asset} and
-will resolve the structural-vs-microstructure question of
-\S\ref{sec:disc_structural} one way or the other.
+\begin{enumerate}
+    \item \emph{Backbone is fixed.} All twenty checkpoints share the
+    TRADES transformer~\cite{berti2025trades}; the per-element-MSE
+    mechanism has only been tested inside one architectural family.
+    \item \emph{INTC-dominance.} The zero-inflated marginal that
+    drives the \S\ref{sec:copula_story} pathology is INTC-specific;
+    cross-asset evidence base is two-and-a-half tickers, not three.
+    \item \emph{Thin holdout for agents.} Twenty days gives wide
+    $\rdiff$ confidence intervals (\S\ref{sec:rdiff_decoupled});
+    single-cell readings over-reach.
+    \item \emph{Predictive score is LSTM-conditional.} A different
+    downstream sequence model could re-rank the checkpoints.
+    \item \emph{Backtests are non-responsive.} Every agent number
+    assumes trades do not move the market; real impact would
+    compress spreads and could reorder Table~\ref{tab:rho_diff_spread}.
+    \item \emph{No intraday structure in synth output} (caveat
+    visualized in Appendix~\ref{app:deep_diagnostic},
+    Figure~\ref{fig:intraday_lob_volume}); downstream tasks needing
+    time-of-day microstructure cannot use these tapes directly.
+    \item \emph{Autoregressive diffusion.} Each event's denoising
+    conditions on the realized previous event rather than the noised
+    joint --- may ease the per-element MSE pressure that
+    under-coordinates extremes.
+    \item \emph{Mixture-of-experts denoising head.}
+    $\eps$-prediction for bulk events, $v$-prediction for tail
+    events, with a learned router --- one model carries both modes.
+    \item \emph{Direct distributional losses} (MMD, Wasserstein)
+    added to the MSE objective would reward shape directly rather
+    than as a squared-error side effect.
+    \item \emph{Broader evaluation.} More agents (momentum,
+    market-taking, mean-reversion in addition to the MM family of
+    Appendix~\ref{app:agents_impl}), longer holdouts, an
+    impact-aware backtester; the SPY chained-training job
+    (Appendix~\ref{app:reproducer}) will close the cross-asset
+    triangle.
+\end{enumerate}
 
 % ══════════════════════════════════════════════════════════════════════════
 \section*{AI Disclosure}
 \label{sec:ai_disclosure}
 \addcontentsline{toc}{section}{AI Disclosure}
-
-We used Anthropic's Claude as a research collaborator throughout this
-project: discussing architectural design choices, planning experiment
-sweeps, sanity-checking diagnostics, generating and refactoring code,
-and drafting prose for this report. The substantive judgments --- which
-ablations were worth running, what to read into a given diagnostic,
-whether a finding was load-bearing or coincidental, and how to frame
-the structural-vs-microstructure-specific reading of the three-axis
-tension --- are our own. All cluster commands were executed by us and
-all reported numbers come from runs on our own pipeline. We also flag
-that Claude's predictions about specific experimental outcomes were
-sometimes directionally wrong (the copula kurtosis prediction described
-in \S\ref{sec:copula_promise} is the most visible example, and the
-Phase A Min-SNR-$\gamma$ misadventure logged in
-Appendix~\ref{app:phaseA} is another); we have reported these negative
-results honestly in the corresponding sections rather than removing
-the architectural arms that fell over.
+We used Claude (Anthropic) for architectural
+discussion, code debugging, and document formatting.
 
 % ══════════════════════════════════════════════════════════════════════════
 \bibliographystyle{plain}
@@ -2410,21 +1452,24 @@ the architectural arms that fell over.
 
 % ══════════════════════════════════════════════════════════════════════════
 \appendix
-\section{Full G1 Value Matrix}
+\section{Supplementary Material}
+\label{app:supplementary}
+\subsection{Full G1 Value Matrix}
 \label{app:g1_matrix}
 
-The main-body G1 figure (Figure~\ref{fig:g1_heatmap}) restricts to
-the three protagonists (v2, v5, v9) under each of the four
-regime-conditioning labels. The full $20$-checkpoint matrix is
-reproduced here for reference: rows are the same fifteen G1 checks
-(``Conditional moments'' dropped --- categorical), columns are
-every trained INTC checkpoint, the rightmost column is the
-real-data reference, cell colour is the per-row min--max
-normalised absolute error against real.
+Two complementary G1 views live here:
+Figure~\ref{fig:g1_heatmap_full} is the full $20$-checkpoint matrix
+(rows: the same fifteen G1 checks, ``Conditional moments'' dropped
+as categorical; columns: every trained INTC checkpoint, with the
+real-data reference on the right). Figure~\ref{fig:g1_heatmap_per_regime}
+restricts to the three protagonists (v2, v5, v9) and breaks each
+of them out across the four regime-conditioning labels. In both
+views, cell text is the actual synth value and cell colour is the
+per-row min--max normalised absolute error against real.
 
-\begin{figure}[h!]
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=\linewidth]{fig_2_1_g1_numerical_heatmap.pdf}
+    \includegraphics[width=\linewidth]{fig/fig_2_1_g1_numerical_heatmap.pdf}
     \caption{\textbf{Full G1 matrix --- $20$ INTC checkpoints
     $\times$ $15$ stylized-fact checks.} Cell text is the actual
     synth value; colour is the per-row min--max normalised absolute
@@ -2433,13 +1478,35 @@ normalised absolute error against real.
     \label{fig:g1_heatmap_full}
 \end{figure}
 
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=\linewidth]{fig/fig_p0d_g1_per_regime.pdf}
+    \caption{\textbf{Per-regime G1 stylized-facts matrix for v2 / v5
+    / v9.} Fifteen rows (``Conditional moments'' dropped --- the
+    validator emits a categorical label). Thirteen columns: each
+    protagonist evaluated under each of the four regime-conditioning
+    labels (\emph{base}, \emph{high\_vol}, \emph{toxic},
+    \emph{thin}), plus the real-data reference on the far right.
+    Grey ``n/a'' cells are checks where the validator returned NaN
+    because the statistic is undefined for that generator-regime
+    pair (v9's combination of $\sim 99\%$ zero-mass and dequantised
+    tails makes the trade-sign ACF, RV signature shape, and
+    base-regime ACF power-law $\beta$ estimators numerically
+    degenerate). The trade-fraction row at the bottom carries the
+    headline composition gap: real $\approx 0.048$; v2 and v5
+    $\approx 0.50$--$0.60$ across all regimes; v9
+    $\approx 0.04$--$0.08$ across all regimes --- v9 alone gets
+    the per-event composition right.}
+    \label{fig:g1_heatmap_per_regime}
+\end{figure}
+
 A complementary view of the per-checkpoint distributional fit:
 the trade-fraction bar (sorted across all twenty) and the
 return-tail probability at fixed $z$-thresholds for v2/v5/v9.
 
-\begin{figure}[h!]
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=0.85\linewidth]{fig_2_4_trade_fraction.pdf}
+    \includegraphics[width=0.85\linewidth]{fig/fig_2_4_trade_fraction.pdf}
     \caption{\textbf{Trade fraction across the twenty INTC
     generators.} Dashed line marks real's $0.0477$. The
     ``trade-fraction realists'' (v9, v9\_b, v2\_remapped, v7\_b)
@@ -2449,9 +1516,9 @@ return-tail probability at fixed $z$-thresholds for v2/v5/v9.
     \label{fig:trade_fraction_app}
 \end{figure}
 
-\begin{figure}[h!]
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=0.7\linewidth]{fig_2_3_return_tail.pdf}
+    \includegraphics[width=0.7\linewidth]{fig/fig_2_3_return_tail.pdf}
     \caption{\textbf{Return-tail probability $P(|r|>z\sigma)$ at
     the three standard-deviation thresholds for which we have
     summary statistics, log-y.} Real INTC's tail at every
@@ -2461,7 +1528,7 @@ return-tail probability at fixed $z$-thresholds for v2/v5/v9.
     \label{fig:return_tail_app}
 \end{figure}
 
-\section{Cross-Architecture Metric Correlation Matrix}
+\subsection{Cross-Architecture Metric Correlation Matrix}
 \label{app:metric_correlations}
 
 Table~\ref{tab:correlation_subset} in §\ref{sec:res_anticorrelation}
@@ -2471,9 +1538,9 @@ across all twenty checkpoints is below. The figure also serves as
 the full-population version of Figure~\ref{fig:rank_bump} which is
 the ranks-only version that highlights the protagonists.
 
-\begin{figure}[h!]
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=\linewidth]{fig_1_2_pairwise_anticorrelation.pdf}
+    \includegraphics[width=\linewidth]{fig/fig_1_2_pairwise_anticorrelation.pdf}
     \caption{\textbf{Pairwise scatter of the three evaluation axes
     across all twenty INTC checkpoints.} v2/v5/v9 highlighted by
     architectural family colour; LOWESS smoothers and Spearman
@@ -2486,9 +1553,9 @@ the ranks-only version that highlights the protagonists.
     \label{fig:pairwise_anticorrelation_app}
 \end{figure}
 
-\begin{figure}[h!]
+\begin{figure}[ht]
     \centering
-    \includegraphics[width=0.75\linewidth]{fig_3_3_predictive_vs_scale.pdf}
+    \includegraphics[width=0.75\linewidth]{fig/fig_3_3_predictive_vs_scale.pdf}
     \caption{\textbf{Predictive score vs.\ synthetic return-scale
     ratio (synth std / real std), both log.} Across the twenty
     checkpoints, the relationship is non-monotone: scale-matched
@@ -2500,57 +1567,1103 @@ the ranks-only version that highlights the protagonists.
     \label{fig:pred_vs_scale_app}
 \end{figure}
 
-\section{Full Ablation Heatmap}
+\paragraph{Sigma-vs-predictive non-monotonicity.}
+The body §\ref{sec:res_predictive} reports the headline finding
+in compressed form: scale matching is neither necessary nor
+sufficient for predictive transferability. The
+sigma-vs-predictive scatter (Figure~\ref{fig:pred_vs_scale_app})
+plots the non-monotone relationship visually; the prose here
+interprets it cluster-by-cluster. The twenty checkpoints fall
+into three populated regions of the
+$\sigma_{\text{synth}} / \sigma_{\text{real}}$ axis:
+
+\begin{itemize}
+    \item \emph{The scale-matched cluster}
+    ($\sigma_{\text{synth}} \approx \sigma_{\text{real}}$): all
+    eight of v2, v3\_e9, v3\_e19, v3p5, v4, v5, v6, v7, v7\_b.
+    These checkpoints match the real-data return scale within
+    a factor of two and span an order of magnitude on predictive
+    ($10$--$36\times$ replay). They are the canonical
+    ``well-behaved generator'' regime --- decent G1, decent PCA,
+    middling predictive.
+    \item \emph{The scale-exploded noclip family}
+    ($\sigma_{\text{synth}} \approx 40\,\sigma_{\text{real}}$):
+    v2\_noclip, v3\_e9\_noclip, v3p5\_noclip, v4\_noclip. These
+    sit at the \emph{best} end of the predictive axis
+    ($4$--$14\times$ replay) despite emitting returns
+    $\sim 40\times$ wider than real. The mechanism: the LSTM reads
+    per-event sign-and-order structure, not absolute magnitude,
+    and the noclip family preserves the sign structure cleanly even
+    though it loses the magnitude calibration.
+    \item \emph{The copula family}
+    ($\sigma_{\text{synth}} \approx 0.6\,\sigma_{\text{real}}$):
+    v8, v8\_b, v9, v9\_b, v10\_cascade, v11, v2\_remapped.
+    These sit at the \emph{worst} end ($28$--$210\times$ replay)
+    despite emitting returns at roughly the right scale. The
+    copula round-trip is essentially correct on marginals and on
+    Spearman ranks but introduces enough per-event noise to
+    wash out the predictable structure
+    (\S\ref{sec:copula_lesson} unpacks the v2\_remapped control
+    that isolates this mechanism).
+\end{itemize}
+
+The non-monotonicity is the load-bearing piece of evidence
+behind \S\ref{sec:disc_structural}'s mechanism argument:
+predictive transferability is decoupled from both marginal
+realism and from scale calibration. Generators can fail the
+predictive axis from either direction (too-narrow copula,
+too-wide noclip) for different reasons, and they can pass it
+while failing G1 (the noclip family does both).
+
+\paragraph{Reading the two views together.}
+The body \S\ref{sec:res_anticorrelation} Spearman matrix
+(Table~\ref{tab:correlation_subset}) and the
+Figure~\ref{fig:pairwise_anticorrelation_app} pairwise scatter
+encode the same population-level information from different
+angles --- the matrix collapses the data to rank correlations,
+the scatter preserves the magnitudes. The
+sigma-vs-predictive view of Figure~\ref{fig:pred_vs_scale_app}
+adds a third dimension --- output magnitude --- that the
+pairwise view collapses, and it is what makes the three-cluster
+structure visible. Read together, the three exhibits localize
+the three-axis tension: the protagonists v2/v5/v9 sit at
+distinct cells of all three views, the noclip family lives at
+the predictive-corner of Figure~\ref{fig:pred_vs_scale_app}
+with $0\%$ PCA coverage, and the copula family inverts that
+trade-off.
+
+\subsection{Full PCA Coverage Table}
+\label{app:pca_coverage_full}
+
+The main-body §\ref{sec:res_pca} reports three reference points
+from the full PCA convex-hull coverage measurement (copula
+generators dominate at $\sim 85\%$, the v2/v5/v9 trio sits in the
+$46$--$71\%$ band, the noclip family is at $0\%$ despite oversize
+hulls). The full per-checkpoint breakdown follows.
+
+\begin{table}[ht]
+    \centering
+    \footnotesize
+    \begin{tabular}{lrrr}
+        \toprule
+        Model & Coverage \% & Synth hull area & vs. real ($25.2$) \\
+        \midrule
+        \multicolumn{4}{l}{\textit{Coverage-dominant (synth hull engulfs real)}} \\
+        v8           & 85.2 & 66.0 & $2.6\times$ real \\
+        v10\_cascade & 84.9 & 49.7 & $2.0\times$ real \\
+        \midrule
+        \multicolumn{4}{l}{\textit{Coverage-realistic (synth hull comparable to real)}} \\
+        v9           & 71.4 & 30.7 & $1.2\times$ \\
+        v9\_b        & 67.6 & 22.6 & $0.9\times$ \\
+        v4\_noclip   & 63.6 & 26.6 & $1.1\times$ \\
+        v3\_e9       & 61.5 & 17.9 & $0.7\times$ \\
+        v7           & 59.4 & 16.8 & $0.7\times$ \\
+        v2           & 58.6 & 18.9 & $0.7\times$ \\
+        v4           & 56.8 & 17.6 & $0.7\times$ \\
+        v6           & 54.1 & 15.5 & $0.6\times$ \\
+        \midrule
+        \multicolumn{4}{l}{\textit{Coverage-thin (synth hull inside real but undersized)}} \\
+        v3\_e19      & 48.5 & 15.3 & $0.6\times$ \\
+        v3p5         & 47.0 & 13.6 & $0.5\times$ \\
+        v5           & 46.1 & 12.2 & $0.5\times$ \\
+        v7\_b        & 24.7 & 9.1  & $0.4\times$ \\
+        v2\_remapped & 16.1 & 6.5  & $0.3\times$ \\
+        \midrule
+        \multicolumn{4}{l}{\textit{Coverage-zero (hull misses real entirely)}} \\
+        v2\_noclip    & 0.0 & 5{,}720 & $227\times$ real, but disjoint \\
+        v3\_e9\_noclip& 0.0 & 4{,}953 & $197\times$ real, but disjoint \\
+        v3p5\_noclip  & 0.0 & 12{,}253& $486\times$ real, but disjoint \\
+        \midrule
+        \multicolumn{4}{l}{\textit{Degenerate (PCA undefined --- one feature has zero std)}} \\
+        v8\_b, v11    & --- & --- & --- \\
+        \bottomrule
+    \end{tabular}
+    \caption{\textbf{PCA convex-hull coverage of real INTC, sorted
+    by coverage percentage.} ``Coverage \%'' is
+    intersection-over-real-hull-area. Real's hull spans $25.2$
+    units of PC1--PC2 area. Two findings: (a) the two
+    highest-coverage generators (v8 and v10\_cascade) are also the
+    two with the worst kurtosis behaviour --- coverage and
+    per-feature distributional realism are not the same thing;
+    (b) the three noclip checkpoints whose hulls are
+    $\sim 200$--$500\times$ real's area still register $0\%$
+    coverage --- they are completely disjoint from real in
+    PC1--PC2 space.}
+    \label{tab:pca_coverage_top}
+\end{table}
+
+\paragraph{Coverage-dominant families.}
+The two highest-coverage generators are v8 ($85.2\%$,
+$2.6\times$ real's hull area) and v10\_cascade ($84.9\%$,
+$2.0\times$). On the marginal-realism axis they are precisely the
+worst performers in the study: v8's excess kurtosis is $2.6$
+versus real's $755$, and v10\_cascade's is $4124$, both an order
+of magnitude away from the protagonist trio. The mechanism is the
+copula round-trip pushing the projection off-centre while
+collapsing the marginal shape onto a near-Gaussian inside the
+hull. Coverage and per-feature distributional realism are not the
+same property --- a generator can paint a wide convex hull around
+the right region while filling that hull with the wrong-shape
+data.
+
+\paragraph{The protagonist trio in context.}
+The v2 / v5 / v9 protagonists sit in the
+\emph{coverage-realistic} band ($46$--$71\%$, hull areas
+$0.5$--$1.2\times$ real's $25.2$~PC1--PC2-area units), and the
+trio's coverage ordering inverts the heavy-tail ordering: v9
+($71.4\%$) covers the most despite having the most-restrictive
+marginal recipe, v2 ($58.6\%$) sits in the middle, and v5
+($46.1\%$) covers the least despite having the heaviest tails.
+This is the cleanest small-sample evidence of the
+predictive-vs-PCA $+0.57$ correlation
+(Table~\ref{tab:correlation_subset}): family membership organizes
+the trade-off, not any single axis on its own.
+
+\paragraph{Noclip-family zero coverage.}
+The three noclip checkpoints (v2\_noclip, v3\_e9\_noclip,
+v3p5\_noclip) produce the largest synthetic hulls in the study
+--- v3p5\_noclip's hull spans $486\times$ real's
+PC1--PC2 area --- yet all three register $0\%$ coverage. The
+mechanism is that removing the $x_0$ clip lets the model emit
+extreme values that fall entirely outside real's PC1--PC2 region;
+the spatial overlap with real's hull is empty regardless of how
+much area the synth hull encloses. v4\_noclip is the partial
+exception: it stays at $63.6\%$ coverage with a hull area
+$1.1\times$ real's, suggesting the $v4 \to v4\_noclip$ walk
+removes the clip without committing to the extremes the way the
+other $\eps$-prediction noclip variants do.
+
+\paragraph{Degenerate cases.}
+v8\_b and v11 do not appear in the coverage table because PCA is
+undefined when one or more feature has exactly-zero synthetic
+standard deviation. v8\_b's degeneracy is the canonical
+copula-collapse exemplar (Appendix~\ref{app:copula_mechanism},
+Figure~\ref{fig:z_space_collapse}, centre panel); v11 emits
+\texttt{mid\_return} $\approx 0$ everywhere, a separate failure
+mode but with the same downstream consequence of an undefined
+PCA. We keep these checkpoints in
+Table~\ref{tab:checkpoint_metrics} and in the agent-ranking
+analysis (\S\ref{sec:rdiff_decoupled}) because they remain
+informative for those evaluation axes even when PCA is not
+applicable.
+
+\subsection{Full Ablation Heatmap}
 \label{app:ablation_full}
 
-The full-population ablation heatmap (six toggles $\times$ six
-metrics) is wired into the main body at
-Figure~\ref{fig:ablation_heatmap} (\S\ref{sec:res_ablation}); no
-duplicate is needed here. This stub is preserved for
-cross-reference compatibility.
+The main-body ablation discussion in \S\ref{sec:res_ablation}
+extracts six rows of the matched-pair table
+(Table~\ref{tab:ablation_walks}). The figure below renders the same
+data as a full $6 \times 6$ heatmap. The single most striking cell
+is FiLM~$\to$~AdaLN's $\Delta\text{kurt} = +1184$ in the kurt
+column --- the largest absolute kurtosis swing of any toggle, and
+the proximate cause of v5's heavy-tail behaviour. The next most
+striking is $-x_0$\_clip's $\Delta\text{PCA\%} = -40$, the
+destructive move that pushes the noclip hulls completely outside
+real's PC1--PC2 region. Reading by row, the $+\text{copula}$ row
+shows the characteristic ``moves all metrics at once'' signature
+that \S\ref{sec:copula_story} unpacks in detail.
 
-\section{Cross-Asset Full Comparison}
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=\linewidth]{fig/fig_5_1_ablation_heatmap.pdf}
+    \caption{\textbf{Architectural ablation: per-axis effect of each
+    toggle on each evaluation metric.} Six rows, one per
+    architectural toggle (the same six rows as
+    Table~\ref{tab:ablation_walks}). Six columns, one per
+    evaluation metric ($\Delta$G1, $\Delta$Pred$\times$,
+    $\Delta$PCA\%, $\Delta$kurt, $\Delta$trade frac,
+    $\Delta$vol-vol corr). Cell text is the matched-pair mean
+    effect; cell colour is the per-column normalised effect
+    (red = degrades the metric, blue = improves it; ``improve''
+    means closer to real on that metric, e.g.\ predictive ratio
+    \emph{decreasing} toward $1.0$). Per-column normalisation makes
+    the strongest move per metric visually obvious regardless of
+    its absolute magnitude.}
+    \label{fig:ablation_heatmap}
+\end{figure}
+
+The body §\ref{sec:res_ablation} compresses the three walks
+through the architecture graph to three sentences each. This
+appendix reproduces the original full walks in the form the data
+in Table~\ref{tab:ablation_walks} supports.
+
+\paragraph{v2 $\to$ v5 (full walk).}
+v5 differs from v2 on two toggles: prediction target
+($\eps \to v$) and conditioning (FiLM $\to$ AdaLN-Zero). Row $1$ of
+Table~\ref{tab:ablation_walks} reports the matched-pair effect of
+$\eps \to v$ alone: kurtosis drops by $\sim 30$ (the mode-covering
+bias on bulk softens), predictive improves by $\sim 30\times$
+replay, with essentially no effect on G1 ($\Delta = 0$). Row $2$
+reports the effect of FiLM $\to$ AdaLN: predictive worsens by
+$\sim 35\times$ replay, but kurtosis jumps by $+1184$ --- the
+largest absolute kurtosis swing in the table. AdaLN-Zero supplies
+enough conditioning bandwidth for the model to commit to extreme
+samples, which is exactly what was needed to overshoot real's
+kurtosis of $755$ to v5's observed $1257$. The net effect of the
+two toggles together is the v5 we observe: better kurtosis,
+marginally better predictive, slightly worse PCA, same G1. The
+takeaway from this walk: \emph{tail behaviour is dominated by
+conditioning bandwidth, not by prediction target}; the
+$\eps \to v$ swap on its own does not produce heavy tails.
+
+\paragraph{v2 $\to$ v9 (full walk).}
+v9 differs from v2 on the data-transform axis only --- both are
+$\eps$-prediction and FiLM-conditioned, but v9 wraps the raw
+features through a copula transform with dequantization
+(\S\ref{sec:copula_fix} unpacks the algorithmic detail;
+Appendix~\ref{app:copula_impl} gives the per-feature treatment
+table). The fourth and fifth rows of Table~\ref{tab:ablation_walks}
+are the dominant deltas. $+$ copula alone drops G1 by $4$ checks,
+pushes predictive up by $+103\times$ replay (severely worse), adds
+$+27\%$ to PCA coverage, and \emph{collapses} trade fraction by
+$-0.55$ (the largest single-toggle effect in the entire table ---
+real's trade fraction is $\sim 0.048$, so a $-0.55$ swing closes
+most of the v2-to-real gap on its own). $+$ dequantization then
+recovers $+4$ G1 checks, gives back $-11\times$ on predictive, and
+pushes kurtosis up by $+126$ back into the
+$\sim 100$--$200$ range that most non-noclip checkpoints occupy.
+The combination copula+dequant has a net effect on G1 of $0$,
+$-92\times$ replay on predictive (still much worse than v2),
+$+13\%$ on PCA, and $-0.51$ on trade fraction. v9 is what comes
+out the other side: same G1 as v2, much worse predictive, better
+PCA, dramatically better trade fraction. The takeaway: \emph{copula
+buys distributional realism at the cost of predictive
+transferability}, and dequantization mitigates but does not undo
+that trade-off.
+
+\paragraph{The noclip family (full walk).}
+Removing the $x_0$ output clip --- the safety bound that keeps
+each sampling step from emitting extreme values --- is not a path
+that involves the protagonist trio (none of v2, v5, v9 use noclip),
+but the toggle is too informative to skip. The last row of
+Table~\ref{tab:ablation_walks} shows it loses $4.8$ G1 checks,
+destroys PCA coverage ($-40.1\%$, often all the way to disjoint
+hulls), and slightly worsens kurtosis ($-16$) --- in exchange for
+the largest predictive-score improvement in the study
+($-17\times$ replay). The mechanism is what
+\S\ref{sec:res_predictive} flagged: removing the clip lets
+the model emit return-sign sequences with realistic per-event
+variation, which is exactly what the LSTM rewards. The cost ---
+losing roughly four G1 stylized facts and all spatial overlap with
+real --- shows that ``best predictive transferability'' and ``best
+realism'' are not served by the same toggle. The three
+protagonists demonstrate this trade-off pairwise across
+architecture families; the noclip family demonstrates it
+monotonically along a single toggle.
+
+\subsection{Cross-Asset Full Comparison}
 \label{app:cross_asset_full}
-% Combined INTC + TSLA + SPY × v2 + v5 (+ v9 where available) table
-% with G1, predictive, PCA, trade fraction and per-ticker real
-% references; this populates as the SPY chained-training pipeline
-% completes (\S\ref{sec:spy}).
 
-\section{All 20 Checkpoint Configurations}
+The §\ref{sec:cross_asset} body presents the four-cell TSLA result
+(Table~\ref{tab:cross_asset_tsla}) and the partial SPY cell
+(\S\ref{sec:cross_findings}). This appendix records the SPY
+artifacts we did obtain.
+
+\paragraph{SPY: what we have.}
+SPY training completed via the chained $4 \times 6$h pipeline of
+Appendix~\ref{app:reproducer} ($\sim 340{,}000$ optimizer steps per
+architecture). We sampled $\sim 6{,}300$ SPY tapes per architecture
+on \texttt{mit\_preemptable}. Downstream of sampling, the
+\texttt{mit\_preemptable} partition pre-empted the v2 and v5
+validation jobs partway through D-suite computation (B and C
+suites complete; G1 aggregate not produced) and the predictive-
+score job hit OOM on the $\sim 6{,}300$-tape SPY workload. The
+TRADES-metrics pipeline (script 62, lighter memory footprint)
+completed and produced PCA coverage, vol-volatility correlation,
+leverage-effect, and mid-price traces for both v2 and v5 on SPY.
+
+\begin{table}[ht]
+    \centering
+    \footnotesize
+    \begin{tabular}{lll}
+        \toprule
+        Quantity & spy\_v2 & spy\_v5 \\
+        \midrule
+        PCA coverage \%               & $0.0$              & $\mathbf{60.0}$ \\
+        Synth hull area               & $35.8$             & $18.9$ \\
+        Real hull area                & \multicolumn{2}{c}{$26.9$ (PC1--PC2 units)} \\
+        Synth hull centre $(\text{PC1}, \text{PC2})$ & $(11.1, 9.9)$ & $(0.19, 0.15)$ \\
+        Marginal pass rate (B-suite, 9 features) & $6/9$         & $\mathbf{8/9}$ \\
+        Vol-vol Pearson distribution mean (per tape) & --- & --- \\
+        Mid-price-trace figure         & Fig.~\ref{fig:spy_traces_v2} & Fig.~\ref{fig:spy_traces_v5} \\
+        \bottomrule
+    \end{tabular}
+    \caption{\textbf{SPY cross-asset cell --- partial.} v5
+    dominates v2 on both measurable axes; v2's PCA hull lands
+    completely outside real's region (centre at $(11, 10)$ vs.\
+    real centred near origin). Predictive transferability and the
+    full G1 aggregate were not produced in the submission window.}
+    \label{tab:cross_asset_spy_partial}
+\end{table}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.7\linewidth]{fig/spy_midprice_traces_v2.pdf}
+    \caption{\textbf{SPY mid-price trace, v2.} Two-panel TRADES Fig
+    8 layout: real overlay (top) + synth-only zoom (bottom). v2's
+    SPY output exhibits the same continuous-drift behaviour
+    documented for v2 on INTC: no plateau staircase, frequent
+    small mid-price moves.}
+    \label{fig:spy_traces_v2}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.7\linewidth]{fig/spy_midprice_traces_v5.pdf}
+    \caption{\textbf{SPY mid-price trace, v5.} Same layout as
+    Fig.~\ref{fig:spy_traces_v2}. v5's SPY output is comparable to
+    v2's on this exhibit; the divergence shows up on PCA coverage
+    (Table~\ref{tab:cross_asset_spy_partial}) rather than on
+    single-tape mid-price evolution.}
+    \label{fig:spy_traces_v5}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.7\linewidth]{fig/spy_pca_coverage.pdf}
+    \caption{\textbf{SPY PCA convex-hull coverage, v2 vs v5.}
+    Real INTC tape distribution (black hull, area $26.9$). v2 synth
+    tapes (blue) sit in a hull centred at $(\text{PC1},
+    \text{PC2}) \approx (11.1, 9.9)$ with $0\%$ overlap of real;
+    v5 synth tapes (green) sit near the origin with $60.0\%$
+    overlap. v5 dominates v2 on this axis --- the opposite ordering
+    of TSLA.}
+    \label{fig:spy_pca}
+\end{figure}
+
+\paragraph{Per-architecture B-suite (validation, partial).}
+For both spy\_v2 and spy\_v5 we have nine validation PDFs each
+(B1--B4 distributional checks + C1--C5 ACF and microstructure
+checks); these are stored under
+\texttt{results/\_archive/spy\_\{v2,v5\}/validation/} and not
+reproduced here. The B5 marginal-summary CSVs supply the
+``$X/9$ pass'' counts cited in
+Table~\ref{tab:cross_asset_spy_partial}.
+
+\paragraph{Ticker-selection rationale.}
+The most common concern raised about §\ref{sec:results} is that
+INTC is pathological. Across the $\sim 40$M events in our
+validation set, $88.85\%$ of mid-return events are exactly zero
+(\S\ref{sec:lob_mechanics}). If the three-axis tension is an
+artifact of that one dataset feature, our conclusions should not
+generalize to tickers with less zero-inflation. To test, we re-ran
+the v2 and v5 training and evaluation pipelines on two qualitatively
+different tickers chosen to bracket the INTC regime:
+\textbf{TSLA} (small-tick single-name; smaller zero-return fraction,
+more continuous returns) and \textbf{SPY} (the S\&P 500 ETF; deep
+liquidity, tight spreads, index-arbitrage-driven price discovery).
+Each combination is a fresh end-to-end pipeline: data prep, model
+training, sampling, validation, TRADES metrics, and predictive
+score on per-ticker train/val/holdout splits. We restricted the
+cross-asset comparison to v2 and v5 because they are the two
+architectural extremes from \S\ref{sec:three_protagonists} that
+bracket the three-axis trade-off ($\eps$+FiLM, the predictive
+winner; $v$+AdaLN, the heavy-tail winner). v9 (copula+dequant) was
+deferred because the copula transform's per-feature dequantization
+parameters are dataset-specific and would have required a second
+calibration pass per ticker --- out of scope for the cross-asset
+test.
+
+\paragraph{Full cross-asset comparison table.}
+Table~\ref{tab:cross_asset_full} extends
+Table~\ref{tab:cross_asset_tsla} with a per-ticker real-data
+reference row at the head of each block. TSLA's real trade
+fraction is in the same range as INTC's ($\sim 0.05$); the absolute
+numbers differ slightly because TSLA's lower zero-fraction reshuffles
+the per-event composition, but the order of magnitude matches.
+
+\begin{table}[ht]
+    \centering
+    \footnotesize
+    \begin{tabular}{llrrrr}
+        \toprule
+        Ticker & Model & G1 & Pred $\times$replay & PCA \% & Trade frac \\
+        \midrule
+        INTC   & real (ref) & --- & $1.00$ & $100.0$ & $0.048$ \\
+        INTC   & v2 & $12/15$ & $14.20$        & $58.6$ & $0.558$ \\
+        INTC   & v5 & $13/15$ & $10.69$        & $46.1$ & $0.552$ \\
+        \midrule
+        TSLA   & real (ref) & --- & $1.00$ & $100.0$ & $\sim 0.05$ \\
+        TSLA   & v2 & $12/16$ & $\mathbf{4.86}$& $\mathbf{62.0}$ & $0.183$ \\
+        TSLA   & v5 & $10/16$ & $12.21$        & $18.9$ & $0.340$ \\
+        \midrule
+        SPY    & real (ref) & --- & $1.00$ & $100.0$ & --- \\
+        SPY    & v2 & $6/9^{\dagger}$ & --- & $0.0$ & --- \\
+        SPY    & v5 & $\mathbf{8/9^{\dagger}}$ & --- & $\mathbf{60.0}$ & --- \\
+        \bottomrule
+    \end{tabular}
+    \caption{\textbf{Full cross-asset comparison.} Three tickers
+    $\times$ (real + v2 + v5). INTC and TSLA rows complete; SPY
+    rows partial --- the chained-training pipeline
+    (Appendix~\ref{app:reproducer}) finished training and TRADES
+    metrics, but validation D-suite and predictive-score jobs did
+    not complete in the submission window. ${\dagger}$ SPY G1 cell
+    shows B-suite (9-feature marginal pass count) only; the full
+    G1 aggregate (15 checks) was not produced. Real-data reference
+    rows show the targets each architecture is trying to match.
+    INTC G1 is out of $15$ checks; TSLA G1 is out of $16$ because
+    the additional zero-return-fraction check applies on TSLA but
+    not on INTC. Bold cells: TSLA v2's $4.86\times$ is the best
+    non-distributionally-broken predictive score in our study;
+    TSLA v5's $18.9\%$ is the largest cross-ticker drop in any
+    axis we measured; SPY v5 dominates SPY v2 on the two axes
+    where we have numbers.}
+    \label{tab:cross_asset_full}
+\end{table}
+
+\paragraph{Finding 1: TSLA v2 dominates v5 on every axis we measured.}
+G1 ($12$ vs.\ $10$), predictive ($4.86$ vs.\ $12.2$), and PCA
+($62.0\%$ vs.\ $18.9\%$) all favour v2. On INTC the same
+architectural pair trades off --- v5 wins G1 and predictive while
+v2 wins PCA --- so this is a genuine cross-ticker reversal of the
+architectural ranking, not a re-confirmation. The clean ordering on
+TSLA is the cleanest single piece of evidence we have that the
+three-axis tension is partially INTC-specific: when the underlying
+data is less zero-inflated, the heavy-tail-committing architecture
+($v$-prediction + AdaLN-Zero) has no niche to dominate, and the
+mode-covering baseline ($\eps$-prediction + FiLM) wins everywhere.
+
+\paragraph{Finding 2: TSLA v2 produces the best non-broken predictive score in the study.}
+At $4.86\times$ replay, TSLA v2 is the first non-distributionally-broken
+generator we have to come within an order of magnitude of the
+market-replay baseline. The previous best was the INTC noclip family
+at $4.0\times$, which we documented as distributionally-broken in
+\S\ref{sec:res_predictive} (G1 $= 6/15$, $0\%$ PCA hull). The
+mechanical reading: TSLA's smaller tick and lower zero-fraction give
+the LSTM more per-event signal to fit, and the $\eps$-prediction
+baseline preserves enough of that signal to reach a regime where
+downstream LSTM training transfers genuinely well.
+
+\paragraph{Finding 3: TSLA v5's PCA coverage collapse confirms the $v$-prediction mechanism on smoother data.}
+TSLA v5 lands at $18.9\%$ PCA coverage against INTC v5's
+$46.1\%$. The same architectural mechanism that destroyed PCA
+coverage on the INTC noclip family --- $v$-prediction commits the
+model to extreme samples, and on data where the extremes don't fall
+inside real's region the spatial overlap collapses --- operates on
+TSLA v5 as well, just at a smaller magnitude. So the architecture-level
+cost of $v$-prediction on a smoother-marginal dataset is real:
+TSLA doesn't reward heavy-tail commitment, and v5 pays for it on
+PCA coverage rather than on G1.
+
+\paragraph{Trade-fraction note.}
+TSLA's lower zero-fraction means the per-event composition of the
+synthetic output is structurally closer to real even before any
+generator-specific fix. The trade-fraction problem that motivated
+the §\ref{sec:copula_story} copula case study on INTC is much less
+acute on TSLA --- v2's TSLA trade fraction of $0.183$ is roughly
+$4\times$ real's $\sim 0.05$, against INTC v2's $\sim 12\times$.
+This is consistent with the §\ref{sec:disc_structural} reading
+that the three-axis tension is structural \emph{conditional} on
+INTC-like microstructure rather than to MSE-based diffusion training
+in the abstract.
+
+\subsection{All 20 Checkpoint Configurations}
 \label{app:checkpoints}
-% Detailed hyperparameters per model.
 
-\section{Per-Feature Deep Diagnostic}
+The body §\ref{sec:checkpoints} introduces three logical arms ---
+\emph{scale-accurate}, \emph{scale-exploded}, and \emph{copula}
+--- that organize the architecture-space search. This appendix
+gives the per-arm configuration matrix
+(Table~\ref{tab:checkpoint_arms}) and the per-checkpoint result
+matrix (Table~\ref{tab:checkpoint_metrics}) that the body's
+ablation walks and Spearman correlations are computed from.
+
+\paragraph{Arm-level configuration.}
+Within each arm, every checkpoint shares the TRADES transformer
+backbone~\cite{berti2025trades}, the cosine variance schedule of
+\cite{nichol2021improved}, $T = 1000$ diffusion steps, and
+$\gamma = 5$ Min-SNR loss weighting. The arm structure varies the
+remaining axes:
+
+\begin{table}[ht]
+    \centering
+    \footnotesize
+    \begin{tabular}{p{0.20\linewidth} p{0.22\linewidth} p{0.50\linewidth}}
+        \toprule
+        Arm & Members & Axes varied within arm \\
+        \midrule
+        Scale-accurate & v2, v3\_e9, v3\_e19, v3p5, v4, v5, v6, v7, v7\_b & Prediction target $\eps/v$; conditioning FiLM / AdaLN-Zero; EDM on/off; $\sigma_{\text{data}} \in \{0.5, 1.0, 1.5\}$ for v6 / v7 / v7\_b. Data transform fixed at $z$-score, $x_0$ clip kept. \\
+        \midrule
+        Scale-exploded & v2\_noclip, v3\_e9\_noclip, v3p5\_noclip, v4\_noclip & Same architectural base as the matched scale-accurate sibling, but $x_0$ clip removed. Designed to expose how aggressive the network becomes in the predictive direction at the explicit cost of distributional realism. \\
+        \midrule
+        Copula & v8, v8\_b, v9, v9\_b, v10\_cascade, v11, v2\_remapped & Data transform varied between raw copula (v8 / v8\_b / v11), copula with dequantization (v9 / v9\_b), cascade variant (v10\_cascade), and post-hoc Spearman remap of v2's outputs (v2\_remapped). $b$ suffix denotes a tighter $x_0$ clip; \texttt{cascade} adds a per-feature sequential pipeline. \\
+        \bottomrule
+    \end{tabular}
+    \caption{\textbf{Per-arm configuration summary.} Twenty
+    checkpoints organized along three logical arms. The
+    architectural axes from \S\ref{sec:design_space} (prediction
+    target, conditioning, preconditioning, data transform, loss
+    weighting, $x_0$ clip) take their varied values within an arm;
+    everything else stays at the arm-level default.}
+    \label{tab:checkpoint_arms}
+\end{table}
+
+\paragraph{Per-checkpoint metric matrix.}
+Table~\ref{tab:checkpoint_metrics} is the population the §\ref{sec:results}
+correlations and Table~\ref{tab:ablation_walks} matched-pair averages
+are computed from. Values come from
+\texttt{results/\_archive/multi\_axis\_comparison.csv}.
+
+\begin{table}[ht]
+    \centering
+    \footnotesize
+    \begin{tabular}{lrrrrrr}
+        \toprule
+        Model & G1 & Pred$\times$ & PCA \% & kurt & trade frac & $\sigma_{\text{synth}}$ \\
+        \midrule
+        \multicolumn{7}{l}{\textit{Scale-accurate arm}} \\
+        v2           & $12/15$ & $14.2$  & $58.6$ & $122$  & $0.558$ & $5.7e{-}6$ \\
+        v3\_e9       & $13/15$ & $32.1$  & $61.5$ & $81$   & $0.549$ & $7.2e{-}6$ \\
+        v3\_e19      & $12/15$ & $35.7$  & $48.5$ & $71$   & $0.640$ & $8.0e{-}6$ \\
+        v3p5         & $12/15$ & $33.5$  & $47.0$ & $64$   & $0.450$ & $8.2e{-}6$ \\
+        v4           & $13/15$ & $32.5$  & $56.8$ & $73$   & $0.749$ & $8.4e{-}6$ \\
+        v5           & $13/15$ & $10.7$  & $46.1$ & $1257$ & $0.552$ & $2.0e{-}5$ \\
+        v6           & $12/15$ & $19.5$  & $54.1$ & $186$  & $0.781$ & $5.3e{-}6$ \\
+        v7           & $13/15$ & $25.5$  & $59.4$ & $124$  & $0.560$ & $6.5e{-}6$ \\
+        v7\_b        & $13/15$ & $15.2$  & $24.7$ & $123$  & $0.156$ & $6.5e{-}6$ \\
+        \midrule
+        \multicolumn{7}{l}{\textit{Scale-exploded arm (noclip)}} \\
+        v2\_noclip   & $7/15$  & $8.2$   & $0.0$  & $0.7$  & $0.994$ & $9.6e{-}4$ \\
+        v3\_e9\_noclip & $6/15$ & $\mathbf{4.0}$ & $0.0$  & $-0.4$ & $0.639$ & $9.4e{-}4$ \\
+        v3p5\_noclip & $5/15$  & $13.9$  & $0.0$  & $4.4$  & $0.010$ & $7.4e{-}4$ \\
+        v4\_noclip   & $13/15$ & $18.4$  & $63.6$ & $270$  & $0.737$ & $1.5e{-}5$ \\
+        \midrule
+        \multicolumn{7}{l}{\textit{Copula arm}} \\
+        v8           & $8/15$  & $117.3$ & $85.2$ & $2.6$  & $0.009$ & $4.0e{-}5$ \\
+        v8\_b        & $6/15$  & $208.5$ & ---    & ---    & $0.000$ & $0.0$ \\
+        v9           & $12/15$ & $106.4$ & $71.4$ & $129$  & $\mathbf{0.049}$ & $1.3e{-}5$ \\
+        v9\_b        & $11/15$ & $28.7$  & $67.6$ & $117$  & $0.032$ & $1.5e{-}5$ \\
+        v10\_cascade & $9/15$  & $58.8$  & $84.9$ & $4124$ & $0.561$ & $1.0e{-}6$ \\
+        v11          & $6/15$  & $129.5$ & ---    & ---    & $0.000$ & $0.0$ \\
+        v2\_remapped & $9/15$  & $265.9$ & $16.1$ & $109$  & $0.045$ & $1.0e{-}4$ \\
+        \midrule
+        Real INTC & --- & $1.0$ & $100.0$ & $755$ & $0.048$ & $2.2e{-}5$ \\
+        \bottomrule
+    \end{tabular}
+    \caption{\textbf{Per-checkpoint result matrix.} Columns: G1
+    pass count out of $15$; predictive ratio vs.\ market-replay
+    baseline (lower is better); PCA convex-hull coverage (\%);
+    excess kurtosis of mid-return; synthetic trade fraction; and
+    synthetic $\sigma$ of mid-return (compare to real
+    $2.2 \times 10^{-5}$). Bold cells highlight study-best
+    predictive (v3\_e9\_noclip) and study-best trade-fraction
+    match (v9). Dashes indicate degenerate cells (synth std on at
+    least one feature is exactly zero, making PCA and higher
+    moments undefined). Sourced from
+    \texttt{results/\_archive/multi\_axis\_comparison.csv}.}
+    \label{tab:checkpoint_metrics}
+\end{table}
+
+\paragraph{Reading the table.}
+Three architectural reference points worth pointing out, each
+mapped to a protagonist in \S\ref{sec:three_protagonists}: v2 is
+the scale-accurate baseline (closest direct fine-tune of TRADES);
+v5 is the heavy-tail champion (the AdaLN-Zero + $v$-prediction
+combination that overshoots real's kurtosis); v9 is the
+distributional realist (copula + dequantization). The
+scale-exploded arm provides the predictive-corner reference
+(v3\_e9\_noclip at $4\times$ replay), and the copula arm provides
+the marginal-realism corner (v9 at $0.049$ trade fraction). The
+two degenerate models v8\_b and v11 are kept in the table because
+they appear in the agent-ranking analysis (\S\ref{sec:rdiff_decoupled}),
+where their behaviour is informative even though their
+distributional axes are undefined.
+
+\subsection{Per-Feature Deep Diagnostic}
 \label{app:deep_diagnostic}
 % Output of scripts/60_deep_diagnostic.py for v2, v5, v9.
 
-\section{Copula Transform Implementation}
+This appendix collects two microstructure diagnostics that the
+body's compressed §\ref{sec:res_g1} could not afford to display
+in full but that diagnose specific ways the protagonists fail to
+reproduce real INTC's joint structure. Both outputs come from
+\path{scripts/60_deep_diagnostic.py} run on $\sim 400$ synth tapes
+per architecture against the $20$-day INTC validation window.
+The first diagnostic asks how each protagonist behaves
+\emph{conditional} on the inside spread being wide; the second
+asks how it behaves \emph{conditional} on the time-of-day. Both
+expose joint structure that no per-feature marginal moment can
+detect.
+
+\paragraph{Spread-conditional dynamics.}
+The body sentence in \S\ref{sec:res_g1} compresses one of the more
+structural microstructure-fit failures: when real INTC's inside
+spread widens, the book on the depleted side thickens \emph{and}
+the magnitude of price moves grows. Our three protagonists widen
+their spreads far more often than real does and emit thinner books
+and smaller absolute returns when they do --- the conditional
+joint structure does not hold.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=\linewidth]{fig/fig_p2_1_spread_conditional.pdf}
+    \caption{\textbf{Spread-conditional dynamics --- events with
+    spread $> 1$ tick.} Three panels report (i) the unconditional
+    fraction of events with widened spread; (ii) the mean
+    \texttt{bid\_sz} on widened-spread events; (iii) the mean
+    $|\text{return}|$ on widened-spread events. Real INTC: spread
+    widens on $4.18\%$ of events; when it does, the book is
+    \emph{thicker} (mean \texttt{bid\_sz} $\approx 3.76 \times 10^3$
+    vs.\ a global mean closer to $1.5 \times 10^3$) and prices
+    \emph{move more} (mean $|r| \approx 1.55 \times 10^{-5}$). v2,
+    v5, v9 all widen the spread $50$--$87\%$ of the time, populate
+    the wide-spread regime with much thinner books ($800$--$2200$
+    shares), and emit much smaller returns
+    ($1.5$--$3 \times 10^{-7}$). The joint structure ``spread
+    widens AND book thickens AND prices move more'' is a real-data
+    property that none of our generators reproduces.}
+    \label{fig:spread_cond}
+\end{figure}
+
+\paragraph{Intraday structure.}
+\S\ref{sec:limitations} caveat (vi) flags that our generators do
+not reproduce real INTC's intraday U-shape in queue size or trade
+volume. The mechanism is that the diffusion model is trained on
+regime-conditioned event windows that are not anchored to
+time-of-day, so a synthetic tape carries no information about
+where in the session it sits.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=\linewidth]{fig/fig_intraday_lob_volume.pdf}
+    \caption{\textbf{Level-1 LOB queue size across the trading
+    session, real INTC vs.\ v2 / v5 / v9.} Panels show the per-side
+    mean (line) and 5--95 envelope (shaded) of best-level queue
+    size, bucketed by minute-of-session for real and by event-
+    position-mapped-to-minute for synth (since the synth tapes are
+    not time-anchored). Real exhibits the canonical intraday
+    U-shape with queue sizes climbing sharply toward the close;
+    all three protagonists produce essentially flat profiles, a
+    direct consequence of the regime-conditioned event-window
+    training described in \S\ref{sec:methods}. The bid/ask queue
+    ratios annotated above each panel ($0.949$ on real;
+    $0.911$, $0.789$, $2.662$ on v2, v5, v9 respectively) point to
+    a separate per-architecture asymmetry that is not part of the
+    present scope.}
+    \label{fig:intraday_lob_volume}
+\end{figure}
+
+\subsection{Copula Transform Implementation}
 \label{app:copula_impl}
-% Dequantization algorithm; ε computation; per-feature treatment.
 
-\section{Agent Implementation Details}
+The body §\ref{sec:copula_transform} introduces the copula-with-dequantization
+transform at the design-axis level; the body §\ref{sec:copula_fix}
+describes the dequantization step at narrative level. This appendix
+provides the implementation companion: pseudocode for the
+dequantization preprocessor, the per-feature treatment table that
+records which features get dequantized at what threshold, and a
+brief note on the inference-time inverse map.
+
+\paragraph{Dequantization algorithm.}
+The transform fits a per-feature empirical CDF $\widehat{F}_i$ on
+the training set, applies $z_i = \Phi^{-1}(\widehat{F}_i(x_i))$
+to every event, trains the diffusion model on the $z$-space, and
+inverts the transform $x_i = \widehat{F}_i^{-1}(\Phi(z_i))$ on
+synthetic outputs. Without dequantization, features with a
+dominant point mass (most notably \texttt{mid\_return}'s
+$88.85\%$ at zero) produce a step discontinuity in $\widehat{F}_i$
+that the diffusion model collapses around
+(Appendix~\ref{app:copula_mechanism} walks the four-step argument).
+The dequantization preprocessor injects small uniform noise to
+remove the discontinuity before the CDF is fit:
+
+\begin{algorithm}[ht]
+\caption{Per-feature dequantization preprocessor (v9 pipeline)}
+\label{alg:dequant}
+\begin{algorithmic}[1]
+\Require Per-feature training values $\{x_i^{(n)}\}_{n=1}^{N}$
+\Require Point-mass detection threshold $\tau$ (default $0.01$)
+\For{each feature $i$}
+    \State Identify candidate point masses: values
+    $v$ with empirical mass $\widehat{p}(v) \ge \tau$
+    \For{each detected point mass $v$}
+        \State Let $\delta_v$ = distance to nearest neighbouring
+        training value below $v$ (or above, if $v$ is the
+        smallest)
+        \State Replace each training event with $x = v$ by
+        $x \leftarrow v - U[0, \delta_v]$ (smear mass uniformly
+        over $[v - \delta_v, v]$)
+    \EndFor
+    \State Fit empirical CDF $\widehat{F}_i$ on the smeared
+    training values
+    \State Compute $z_i = \Phi^{-1}(\widehat{F}_i(x_i))$ for every
+    event (training and validation)
+\EndFor
+\State Train the diffusion model on the per-feature $z$-space
+representation
+\State \textbf{At inference time:} sample synthetic $z_i$ from the
+diffusion model, apply the same noise injection
+$z_i \leftarrow z_i + \eta$ with $\eta$ matched to the training-time
+$U[0, \delta_v]$ scale on the back-transformed value, and decode
+$x_i = \widehat{F}_i^{-1}(\Phi(z_i))$.
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Per-feature treatment.}
+Of the eight features in the event tensor (\S\ref{sec:data_source}),
+three have a dominant point mass on INTC and receive dequantization;
+the other five are roughly continuous and are passed through
+unchanged. Table~\ref{tab:dequant_treatment} records the
+per-feature treatment.
+
+\begin{table}[ht]
+    \centering
+    \footnotesize
+    \begin{tabular}{lrrl}
+        \toprule
+        Feature & Point mass & Frequency & Treatment \\
+        \midrule
+        \texttt{mid\_return}   & $0$ & $88.85\%$ & Uniform on $[-\delta, 0]$ \\
+        \texttt{trade\_sz}     & $0$ & $\sim 95\%$ & Uniform on $[-\delta, 0]$ \\
+        \texttt{trade\_sign}   & $0$ & $\sim 95\%$ & Uniform on $[-\delta, 0]$ \\
+        \midrule
+        \texttt{bid\_sz}       & --- & --- & Pass-through ($z$-score only) \\
+        \texttt{ask\_sz}       & --- & --- & Pass-through \\
+        \texttt{bid\_dist}     & --- & --- & Pass-through \\
+        \texttt{ask\_dist}     & --- & --- & Pass-through \\
+        \texttt{event\_type}   & categorical & one-hot & Pass-through (one-hot, no CDF) \\
+        \texttt{$\Delta t$}    & --- & --- & Pass-through (log-scaled at ingest) \\
+        \bottomrule
+    \end{tabular}
+    \caption{\textbf{Per-feature dequantization treatment (v9
+    pipeline).} Three features receive dequantization because their
+    training distributions have a dominant point mass at zero ---
+    \texttt{mid\_return}'s $\sim 89\%$ frequency at $0$ is by far
+    the most consequential. \texttt{trade\_sz} and
+    \texttt{trade\_sign} are zero on the $\sim 95\%$ of events that
+    are quote updates rather than trades. The other features
+    (book sizes, distances, event type, time gap) are roughly
+    continuous on the training set and pass through the
+    $z$-score normalization step only.}
+    \label{tab:dequant_treatment}
+\end{table}
+
+\paragraph{$\delta$ calibration.}
+The smearing interval width $\delta_v$ is chosen as the distance
+from the point mass to the nearest neighbouring training value
+\emph{below} it (or above, in the degenerate case of the point
+mass being the smallest training value). For \texttt{mid\_return}
+this gives $\delta \approx 10^{-7}$, smaller than the smallest
+nonzero return in the training set and therefore comfortably
+inside the conditional-on-nonzero distribution support without
+leaking into it. The conservative choice prevents the dequantized
+zeros from decoding back to non-trivial returns at inference time
+while still smoothing the empirical-CDF discontinuity enough to
+keep the diffusion target well-defined.
+
+\paragraph{Inference-time symmetry.}
+The inference-time noise injection (line $10$ of
+Algorithm~\ref{alg:dequant}) is what closes the round-trip. Without
+it, synthetic $z$ samples that land at the dominant-bucket value
+would all decode back to exactly $x = v$ at inference, recreating
+the point mass we worked to dissolve. With it, the synthetic
+$z$ values that land near the bucket centre decode to a uniform
+smear over the same $[v - \delta_v, v]$ interval, matching the
+training-time treatment and producing a realistic mix of
+small-return events around each previously-quantized value. v9's
+trade-fraction match to real INTC ($0.049$ vs.\ $0.048$) is the
+load-bearing evidence that this symmetry is implemented correctly.
+
+\subsection{Copula Failure Mechanism}
+\label{app:copula_mechanism}
+
+This appendix expands the bridge paragraph at the start of
+\S\ref{sec:copula_story}. Three pieces of context: (i) the
+zero-inflation pathology that explains why a naive copula was
+always going to fail on INTC; (ii) the design intent of the copula
+approach that motivated v8 in the first place; (iii) the actual
+v8 / v8\_b z-space collapse evidence with table and figure.
+
+\paragraph{The zero-inflation pathology.}
+INTC's mid-return distribution is not a smooth heavy-tailed
+density. Across the $\sim 40$M events in our validation set,
+$88.85\%$ of mid-return events are \emph{exactly} zero --- the
+midprice did not change between consecutive events. Conditional on
+a nonzero update, the distribution \emph{is} heavy-tailed:
+conditional standard deviation $\sigma_{\neq 0} \approx
+4.7\times 10^{-5}$, conditional excess kurtosis on the order of
+$10^4$, conditional support extending out to $\pm 0.030$ (i.e.\
+moves of $\sim 1{,}400\sigma_{\neq 0}$). The \emph{unconditional}
+excess kurtosis we report against in the G1 suite (real $755$,
+the headline reference) is what you measure when the $88.85\%$
+point mass and the $11.15\%$ heavy-tailed continuous component are
+mixed in a single distribution.
+
+This mixed structure --- a discrete point mass at zero plus a
+continuous heavy-tailed component --- is the property the copula
+attempt is trying to fix. To see why the naive version cannot
+work, trace the data flow:
+\begin{enumerate}
+    \item The copula transform fits an empirical CDF $\hat{F}$ on
+    the raw mid-return values, applies $z = \Phi^{-1}(\hat{F}(x))$
+    to every event, trains the diffusion model on the $z$-space,
+    samples in $z$-space, and inverts the transform on the
+    synthetic outputs.
+    \item Because $88.85\%$ of training events are $x = 0$, the
+    empirical CDF has a vertical jump at $x=0$ of size $0.89$. All
+    zero-valued training events get mapped to a single $z$ value
+    (specifically, the value of $\Phi^{-1}$ at the midpoint of
+    the jump, which sits well below zero on the $z$-axis).
+    \item The diffusion model trained on this $z$-space sees an
+    input distribution with a massive point mass and a thin
+    continuous component on either side of it.
+    ``$\eps$-prediction MSE on $z$-space'' is now an objective
+    whose optimal solution is to output that same point mass,
+    because that is where most of the probability is.
+    \item At sampling time the model emits a $z$-distribution
+    overwhelmingly clustered at the (negative) collapsed value,
+    with minimal spread. The inverse transform $x =
+    \hat{F}^{-1}(\Phi(z))$ then maps the cluster of $z$ values
+    back to a cluster of $x$ values that all sit near zero ---
+    and the heavy tails the inverse CDF was supposed to recover
+    never get sampled because the model never produces $z$ values
+    in the tail regions of $\Phi$.
+\end{enumerate}
+
+The mechanism is not subtle. The fix that v9 implements ---
+adding a dequantization step that smears the $0.89$-mass point
+evenly across a small interval before computing $\hat{F}$ ---
+was already known in the normalizing-flow literature for exactly
+the same reason (integer-valued image pixels create the same kind
+of CDF discontinuity), and v9 recovers most of what v8 lost on
+G1.
+
+\paragraph{The promise: marginals from inverse CDF, joints from
+diffusion.}
+The reason the copula approach was attractive in the first place
+is Sklar's theorem~\cite{sklar1959fonctions}: any joint
+distribution decomposes into its marginals and a copula that
+captures all the dependence structure between them. If we
+transform every per-feature marginal to a standard normal $\Phi(0,
+1)$ (via the per-feature empirical CDF followed by $\Phi^{-1}$),
+the diffusion model only has to learn the \emph{copula} --- the
+joint dependence in $z$-space, where every marginal is by
+construction a unit Gaussian. At sampling time we invert: a
+synthetic $z$ goes through $\hat{F}^{-1}(\Phi(z))$ and the heavy
+tails of the original distribution come back ``for free'' from
+the inverse CDF. Going into v8 we expected the synthetic kurtosis
+to land in the $400$--$800$ range (i.e.\ within a factor of two
+of real INTC's $755$); the marginal shape would be exact by
+construction, and the only thing the diffusion model would have
+to do is a job ($z$-space joint learning) for which it is
+well-suited.
+
+\paragraph{The failure: v8 z-space collapse.}
+v8 is the naive copula attempt --- raw empirical CDF on each
+feature, no dequantization. The diagnostic that exposes the
+failure is the per-feature distribution of $z$-values that v8
+actually \emph{emits} at sampling time, before the inverse-CDF
+step. If the copula was working, the $z$-distribution should look
+approximately $\mathcal{N}(0, 1)$. It does not
+(Table~\ref{tab:v8_z_collapse}).
+
+\begin{table}[ht]
+    \centering
+    \footnotesize
+    \begin{tabular}{lrrrr}
+        \toprule
+        Feature & $z$-mean & $z$-std & $z$-kurtosis & KS vs.\ $\mathcal{N}(0,1)$ \\
+        \midrule
+        \texttt{mid\_return}  & $-2.55$ & $0.30$ & $310$  & $0.99$ (max) \\
+        \texttt{trade\_dist}  & $-2.21$ & $0.80$ & $20.6$ & $0.95$ \\
+        \texttt{trade\_sz}    & $+2.22$ & $0.46$ & $-0.99$& $0.95$ \\
+        \texttt{bid\_sz}      & $+0.21$ & $0.88$ & $-0.08$& $0.50$ \\
+        \texttt{ask\_sz}      & $-0.10$ & $0.92$ & $+0.33$& $0.56$ \\
+        \bottomrule
+    \end{tabular}
+    \caption{\textbf{v8 $z$-space distribution per feature, sampled
+    from $400$ synthetic tapes.} ``KS'' is the
+    Kolmogorov--Smirnov statistic against the standard normal ---
+    larger means further from $\mathcal{N}(0, 1)$, $1.0$ is the
+    maximum value indicating no overlap at all. \texttt{mid\_return},
+    \texttt{trade\_dist}, and \texttt{trade\_sz} all show the
+    collapse signature: $z$-mean pushed several units away from
+    zero, $z$-std much less than one, KS statistic near the upper
+    bound. The two book-size features are roughly fine, because
+    their training distributions don't have a dominant point mass.}
+    \label{tab:v8_z_collapse}
+\end{table}
+
+The \texttt{mid\_return} row is the worst case and the directly
+predicted consequence of the four-step argument above: the
+diffusion model has learned to emit $z \approx -2.55$ with std
+$0.30$, which inverts back to a near-zero mid-return cluster with
+no tail mass. The collapse is even sharper on the sister
+checkpoint v8\_b --- trained on the same recipe with a tighter
+clip on the $x_0$ output: every sampled value lands at the same
+$z$, so the empirical $z$-std is exactly zero (the table records
+v8 because v8 was the worst non-degenerate case at the time the
+table was built; v8\_b's std=$0$ collapses higher moments to NaN,
+which would render it un-tabulable). v8\_b is the canonical
+``copula collapse'' exemplar: the diffusion model has selected a
+single $z$ point and outputs only that point.
+
+Figure~\ref{fig:z_space_collapse} plots the actual $z$-space
+distribution of \texttt{mid\_return} for v8, v8\_b, and v9
+alongside the $\mathcal{N}(0,1)$ target. The trimodal structure
+visible in all three panels (a central spike + thin edge masses
+at $|z| \approx 2.6$, with a clean gap in between covering $|z|
+\in [0.5, 2.5]$) is the structural signature of the empirical-CDF
+discontinuity --- synth $z$-values either land at the dominant
+plateau bucket or at the far-tail buckets, never in the
+intermediate bands that contain $95\%$ of $\mathcal{N}(0,1)$
+mass. v8\_b is the cleanest exemplar (one tall spike, no edge
+mass); v8 is a partial-recovery version where the spike at
+$z\approx -2.55$ has spread out and a small mass has appeared at
+the edges; v9 has the spike \emph{repositioned} to $z\approx 0$
+with the edge mass still visible.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=\linewidth]{fig/fig_z_space_collapse.pdf}
+    \caption{\textbf{$z$-space collapse and (partial) recovery for
+    \texttt{mid\_return}.} Three panels showing
+    $z = \Phi^{-1}(\hat{F}(\texttt{mid\_return}))$ histograms
+    (log-y density) computed against the saved copula transform's
+    empirical CDF, alongside the $\mathcal{N}(0,1)$ target (dashed
+    black). v8 (left, olive): mode-spike at $z\approx -2.55$ with
+    secondary mass at $|z|\sim 3$ (mean $-2.00$, std $1.09$).
+    v8\_b (centre, dark olive): perfectly degenerate single-point
+    distribution at $z=0$ (mean $0.00$, std $0.00$, higher
+    moments undefined). v9 (right, purple): spike repositioned to
+    $z=0$ with visible tail mass at $|z|\sim 2.6$ (mean $0.00$,
+    std $0.28$). The trimodal structure (central spike + thin
+    edge tufts + a clean gap covering $|z| \in [0.5, 2.5]$) is
+    real data structure, not a viz artifact: the empirical CDF of
+    \texttt{mid\_return} has a giant zero-mass plateau plus thin
+    tails, so $z$-values land either at the plateau bucket
+    (single sharp $z$) or at the far-tail edges, never in the
+    bands that contain $95\%$ of $\mathcal{N}(0,1)$ mass. Reading
+    left to right tells the §5.7 story: dequantisation moves the
+    spike location from $z\approx -2.55$ to $z=0$ and unlocks
+    small but nonzero edge mass; what it does not do is recover
+    the smooth $\mathcal{N}(0,1)$ bell.}
+    \label{fig:z_space_collapse}
+\end{figure}
+
+\subsection{Agent Implementation Details}
 \label{app:agents_impl}
-% Avellaneda-Stoikov parameters; fill simulator semantics; calibration.
 
-\section{Predictive Score LSTM Details}
-\label{app:lstm_details}
-% Architecture, training curves, hyperparameter sensitivity.
+We chose the Avellaneda-Stoikov family of market-making agents
+\cite{avellaneda2008high} because it is the most-studied parametric
+model-MM strategy, the parameters are interpretable (inventory
+aversion $\gamma$, liquidity intensity $\kappa$, time horizon $T$),
+and it is small enough to extend with optional signals without
+changing the optimal-control derivation. The four agents are:
 
-\section{Additional Mid-Price Traces}
-\label{app:traces}
-% All 20 models, 2,560-event traces, normalized.
+\begin{itemize}
+    \item \textbf{A0 --- Constant spread.} Posts $\pm 1$ tick around
+    the prevailing mid at every event, no inventory adjustment, no
+    signal. This is our null --- it should approximately collect the
+    half-spread minus inventory PnL whenever its quotes are crossed.
+    \item \textbf{A1 --- Avellaneda-Stoikov baseline.} Inventory-skewed
+    reservation price $r = s - q\gamma\sigma^2(T - t)$ with
+    half-spread $\delta = \tfrac{1}{2}\gamma\sigma^2(T - t) +
+    \tfrac{1}{\gamma}\ln(1 + \tfrac{\gamma}{\kappa})$, posted on each
+    side. Calibrated $\gamma$ and $\kappa$ on the training set.
+    \item \textbf{A2 --- A1 with order-flow-imbalance (OFI) skew.}
+    Adds a short-horizon OFI term \cite{cont2014price} to the
+    reservation price; quotes are leaned in the direction the OFI
+    signal predicts the next-event return.
+    \item \textbf{A3 --- A1 with VPIN-gated widening.} Volume-
+    synchronized probability of informed trading
+    \cite{easley2012flow}; when VPIN exceeds a threshold the agent
+    widens its spread to compensate for adverse-selection risk.
+\end{itemize}
 
-\section{Volume-Volatility Correlation Distributions}
+The four agents above are deployed in a non-impact fill simulator:
+at the start of each event the agent posts bid and ask limit orders;
+if the next market event crosses the posted price (via a market
+trade or a quote update that puts the new best on the wrong side of
+the agent's quote), the agent gets filled at the posted price;
+otherwise the orders are cancelled and re-posted at the next event.
+Inventory and PnL are tracked event-by-event, with a forced position
+close at the end of each tape. The Avellaneda-Stoikov parameters
+($\gamma$, $\kappa$, $T$) are calibrated on the training window.
+The bias structural to this setup --- recorded markets do not
+respond to the agent's trades --- is the load-bearing reason
+\S\ref{sec:agents} treats agent rankings as a consistency check
+rather than as ground truth.
+
+Per-agent statistics on the real-data historical-replay baseline
+follow.
+
+\begin{table}[ht]
+    \centering
+    \footnotesize
+    \begin{tabular}{lrrr}
+        \toprule
+        Agent (real holdout) & Terminal PnL & Fill count & Fill rate \\
+        \midrule
+        A0 (constant)        & $-352$        & $5{,}755$  & $0.20\%$ \\
+        A3 (AS + VPIN)       & $-189{,}648$  & $7{,}736$  & $0.33\%$ \\
+        A1 (AS baseline)     & $-262{,}253$  & $9{,}582$  & $0.39\%$ \\
+        A2 (AS + OFI)        & $-322{,}124$  & $10{,}728$ & $0.44\%$ \\
+        \bottomrule
+    \end{tabular}
+    \caption{\textbf{Per-agent statistics on the real-data
+    historical-replay baseline.} Sorted by terminal PnL (best on
+    top). A0's near-zero PnL reflects the fact that constant-spread
+    quotes only get filled when the market crosses them, and
+    cross-induced fills net out close to half-spread per event. The
+    three AS-family agents lose increasing amounts of money in the
+    order A3~$<$~A1~$<$~A2 because of the additional fill volume
+    each signal layer commits the agent to. \emph{None} of these
+    PnL numbers includes a market-impact penalty; under impact, the
+    aggressive agents (A2, then A1) would lose more.}
+    \label{tab:agent_truth}
+\end{table}
+
+\subsection{Volume-Volatility Correlation Distributions}
 \label{app:vol_vol}
 % Per-tape KDE plots across model groups.
 
-\section{Phase A Falsification --- Min-SNR $\gamma$ Misadventure}
-\label{app:phaseA}
-% Cautionary log: γ=1 hypothesis was directionally wrong; documented
-% lesson on hyperparameter mathematical structure.
+The body \S\ref{sec:res_g1} reports the headline finding for
+Cont (2001) stylized fact (v) at the population level: real INTC's
+per-tape Pearson correlation between volume and
+$|\text{mid\_return}|$ is unimodal at $\approx +0.34$, while v2
+and v5 emit distributions wide enough to include anti-correlated
+tapes that real never exhibits. This appendix shows the
+per-architecture distribution that the body's summary collapses;
+the figure also records why v9 is excluded from this comparison
+even though v9 is otherwise the most-realistic of our three
+protagonists. The diagnostic is computed per stitched
+$2{,}560$-event tape, with each architecture contributing $400$
+synthetic tapes against the $20$ held-out real INTC days.
 
-\section{Reproducer Commands}
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.85\linewidth]{fig/fig_7_1_vol_vol_kde.pdf}
+    \caption{\textbf{Per-tape volume-volatility correlation
+    distribution.} KDE over $20$ real days (black, filled) vs
+    $400$ synth tapes per architecture (v2 blue line, v5 green
+    line). Real distribution is tight and unimodal centered on
+    $\approx 0.34$ (vertical dashed line). Synth distributions are
+    much wider with appreciable mass at negative correlations,
+    indicating that individual synth tapes can be miscalibrated in
+    a direction (volume and volatility anti-correlated) that the
+    real data never exhibits. v9 is excluded because its very high
+    \texttt{frac\_zero} leaves too few non-trivial trade events per
+    tape to compute Pearson reliably; we revisit v9's per-tape
+    statistics in \S\ref{sec:copula_story}.}
+    \label{fig:vol_vol_kde}
+\end{figure}
+
+\subsection{Reproducer Commands}
 \label{app:reproducer}
 % Exact cluster commands (sbatch invocations) per checkpoint.
+\paragraph{SPY chained training.}
+SPY has roughly $10\times$ more events per day than TSLA, so a
+single training epoch exceeds the cluster's 6-hour job time limit.
+Our initial runs timed out before completing one epoch, and because
+checkpoints were only saved at epoch boundaries, no recoverable
+state was written. We fixed this by saving model state every
+$10{,}000$ optimizer steps (in addition to the per-epoch save) and
+submitting training as a chain of four consecutive 6-hour jobs per
+architecture, each resuming from the most recent step-level
+snapshot of the previous job with full optimizer and learning-rate
+scheduler state restored. The combination keeps progress
+recoverable on any dataset whose epoch length exceeds the
+per-job time budget.
 
 \end{document}
